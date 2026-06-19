@@ -1,0 +1,572 @@
+// ===============================
+// CONFIG
+// ===============================
+const CONFIG = {
+  url: "https://www.hydrodaten.admin.ch/plots/p_q_7days/2606_p_q_7days_en.json",
+  cacheFile: "rhone_cache.json",
+  bgFile: "rhone_bg.png",
+
+  hoursWindow: 24*1,
+  trendHours: 1,
+
+  referenceValue: 200,
+
+  // Absolute discharge thresholds (m³/s)
+  thresholds: {
+    low: 100,
+    high: 200,
+    extreme: 300
+  }
+};
+
+// ===============================
+// FILE MANAGER
+// ===============================
+const fm = FileManager.local();
+const cachePath = fm.joinPath(fm.documentsDirectory(), CONFIG.cacheFile);
+const bgPath = fm.joinPath(fm.documentsDirectory(), CONFIG.bgFile);
+
+// ===============================
+// FETCH + CACHE
+// ===============================
+let json = null;
+
+try {
+  const req = new Request(CONFIG.url);
+  json = await req.loadJSON();
+
+  if (!json?.plot?.data) throw new Error("Invalid API structure");
+
+  fm.writeString(cachePath, JSON.stringify(json));
+} catch (e) {
+  console.log("Network failed, using cache:", e);
+
+  if (fm.fileExists(cachePath)) {
+    try {
+      const cached = JSON.parse(fm.readString(cachePath));
+      if (cached?.plot?.data) json = cached;
+    } catch (err) {
+      console.log("Cache corrupted:", err);
+    }
+  }
+}
+
+if (!json?.plot?.data) {
+  throw new Error("No valid hydrology data available");
+}
+
+// ===============================
+// DATA
+// ===============================
+const series = json.plot.data[0];
+
+const times = series.x.map(t => {
+  const d = new Date(t);
+  if (!isNaN(d)) return d;
+  if (typeof t === "number") {
+    return new Date(t < 1e12 ? t * 1000 : t);
+  }
+  return new Date(0);
+});
+
+const values = series.y.map(v => Number(v)).filter(v => !isNaN(v));
+
+// ===============================
+// TIME WINDOW
+// ===============================
+const now = new Date();
+const cutoff = new Date(now.getTime() - CONFIG.hoursWindow * 60 * 60 * 1000);
+
+let data = times
+  .map((t, i) => ({ t, v: values[i] }))
+  .filter(p => p.t >= cutoff);
+
+if (data.length < 2) {
+  data = times.map((t, i) => ({ t, v: values[i] }));
+}
+
+const seriesValues = data.map(d => d.v);
+
+// ===============================
+// STATS
+// ===============================
+let minV = Infinity;
+let maxV = -Infinity;
+
+for (const v of seriesValues) {
+  if (v < minV) minV = v;
+  if (v > maxV) maxV = v;
+}
+
+const current = seriesValues[seriesValues.length - 1];
+
+// ===============================
+// TREND
+// ===============================
+const trendCutoff = new Date(now.getTime() - CONFIG.trendHours * 60 * 60 * 1000);
+
+const pastPoint = data.find(p => p.t >= trendCutoff);
+const pastValue = pastPoint ? pastPoint.v : seriesValues[0];
+
+const trendDelta = current - pastValue;
+
+const trendDirection =
+  Math.abs(trendDelta) < 10 ? "stable"
+  : trendDelta > 10 ? "rising"
+  : "falling";
+
+function trendColor(dir) {
+  if (dir === "rising") return new Color("#fb7185");
+  if (dir === "falling") return new Color("#34d399");
+  return new Color("#9ca3af");
+}
+
+// ===============================
+// LAYOUT
+// ===============================
+const family = config.widgetFamily;
+
+let titleFont, valueFont, chartW, chartH, padding;
+
+if (family === "small") {
+  titleFont = Font.mediumSystemFont(12);
+  valueFont = Font.boldSystemFont(24);
+  chartW = 320;
+  chartH = 80;
+  padding = 10;
+} else if (family === "medium") {
+  titleFont = Font.mediumSystemFont(14);
+  valueFont = Font.boldSystemFont(30);
+  chartW = 530;
+  chartH = 110;
+  padding = 12;
+} else {
+  titleFont = Font.mediumSystemFont(16);
+  valueFont = Font.boldSystemFont(38);
+  chartW = 720;
+  chartH = 140;
+  padding = 14;
+}
+
+// ===============================
+// BACKGROUND (cached)
+// ===============================
+function createBackground() {
+  const ctx = new DrawContext();
+  ctx.size = new Size(400, 200);
+  ctx.opaque = true;
+
+  ctx.setFillColor(new Color("#06131a"));
+  ctx.fillRect(new Rect(0, 0, 400, 200));
+
+  ctx.setFillColor(new Color("#0b2a3a", 0.25));
+  for (let i = 0; i < 20; i++) {
+    ctx.fillRect(new Rect(0, i * 10, 400, 10));
+  }
+
+  return ctx.getImage();
+}
+
+function getBackground() {
+  if (fm.fileExists(bgPath)) return fm.readImage(bgPath);
+  const img = createBackground();
+  fm.writeImage(bgPath, img);
+  return img;
+}
+
+// ===============================
+// ABSOLUTE DISCHARGE COLORS
+// ===============================
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function hexToRgb(hex) {
+  const c = hex.replace("#", "");
+  return {
+    r: parseInt(c.slice(0, 2), 16),
+    g: parseInt(c.slice(2, 4), 16),
+    b: parseInt(c.slice(4, 6), 16)
+  };
+}
+
+function mixHex(c1, c2, t) {
+  const r = Math.round(lerp(c1.r, c2.r, t));
+  const g = Math.round(lerp(c1.g, c2.g, t));
+  const b = Math.round(lerp(c1.b, c2.b, t));
+
+  const toHex = v => v.toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+const GREEN  = hexToRgb("#34d399");
+const YELLOW = hexToRgb("#fde047");
+const ORANGE = hexToRgb("#f59e0b");
+const RED    = hexToRgb("#fb7185");
+
+function dischargeColor(v) {
+
+  const low = CONFIG.thresholds.low;
+  const high = CONFIG.thresholds.high;
+  const extreme = CONFIG.thresholds.extreme;
+
+  let hex;
+
+  if (v <= low) {
+    
+    hex = mixHex(
+      GREEN,
+      YELLOW,
+      0
+    );
+    
+  } else if (low <= v && v <= high) {
+
+    const t =
+      (v - low) /
+      (high - low);
+
+    hex = mixHex(
+      GREEN,
+      ORANGE,
+      t
+    );
+
+  } else if (high <= v && v <= extreme) {
+
+    const t =
+      (v - high) /
+      (extreme - high);
+
+    hex = mixHex(
+      YELLOW,
+      ORANGE,
+      t
+    );
+
+  } else if (v >= extreme) {
+
+    const t = Math.max(0, v/extreme)
+
+    hex = mixHex(
+      ORANGE,
+      RED,
+      t
+    );
+
+  } 
+
+  return new Color(hex);
+}
+
+// ===============================
+// CHART
+// ===============================
+function buildChart(data) {
+  const vals = data.map(p => p.v);
+
+  const startTime = data[0].t;
+  const endTime = data[data.length - 1].t;
+  const w = chartW;
+  const h = chartH;
+  const pad = 6;
+
+  const ctx = new DrawContext();
+  ctx.size = new Size(w, h);
+  ctx.opaque = false;
+  ctx.respectScreenScale = true;
+
+  let min = Infinity;
+  let max = -Infinity;
+
+  for (const v of vals) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+
+  const range = max - min || 1;
+  const denom = Math.max(vals.length - 1, 1);
+
+  const getX = i => pad + (i / denom) * (w - pad * 2);
+  let getY = v => pad + (1 - (v - min) / range) * (h - pad * 2);
+
+  // reference line
+  const refY = getY(CONFIG.referenceValue);
+  const ref = new Path();
+  ref.move(new Point(pad, refY));
+  ref.addLine(new Point(w - pad, refY));
+
+  ctx.addPath(ref);
+  ctx.setStrokeColor(new Color("#ffffff", 0.18));
+  ctx.setLineWidth(1);
+  ctx.strokePath();
+  
+  // ===============================
+// TIME GUIDES
+// ===============================
+const totalHours =
+  (endTime.getTime() - startTime.getTime()) / 3600000;
+
+const labelHeight = 12;
+
+// leave room for labels at bottom
+const originalGetY = getY;
+const getYWithLabels = v =>
+  pad +
+  (1 - (v - min) / range) *
+  (h - pad * 2 - labelHeight);
+
+// replace getY for everything below
+getY = getYWithLabels;
+
+// number of ticks depending on widget size
+const tickCount =
+  family === "small" ? 2 :
+  family === "medium" ? 4 :
+  6;
+
+function formatTick(date) {
+  if (totalHours <= 48) {
+    return date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  }
+
+  if (totalHours <= 24 * 14) {
+    return `${date.getDate()}/${date.getMonth() + 1}`;
+  }
+
+  return `${date.getDate()}`;
+}
+
+ctx.setFont(Font.systemFont(9));
+ctx.setTextColor(new Color("#ffffff", 0.35));
+
+for (let i = 0; i <= tickCount; i++) {
+
+  const frac = i / tickCount;
+
+  const x =
+    pad +
+    frac * (w - pad * 2);
+
+  const tickTime =
+    new Date(
+      startTime.getTime() +
+      frac *
+      (endTime.getTime() - startTime.getTime())
+    );
+
+  // vertical guide
+  const guide = new Path();
+  guide.move(new Point(x, pad));
+  guide.addLine(
+    new Point(
+      x,
+      h - pad - labelHeight
+    )
+  );
+
+  ctx.addPath(guide);
+
+  ctx.setStrokeColor(
+    i === tickCount
+      ? new Color("#ffffff", 0.18)
+      : new Color("#ffffff", 0.08)
+  );
+
+  ctx.setLineWidth(1);
+  ctx.strokePath();
+
+  // label
+  const label = formatTick(tickTime);
+
+  ctx.drawTextInRect(
+    label,
+    new Rect(
+      x - 20,
+      h - labelHeight,
+      40,
+      labelHeight
+    )
+  );
+}
+
+  // area fill
+  const area = new Path();
+  vals.forEach((v, i) => {
+    const x = getX(i);
+    const y = getY(v);
+
+    if (i === 0) area.move(new Point(x, h - pad));
+    area.addLine(new Point(x, y));
+  });
+
+  area.addLine(new Point(w - pad, h - pad));
+  area.closeSubpath();
+
+  ctx.addPath(area);
+  ctx.setFillColor(new Color("#38bdf8", 0.12));
+  ctx.fillPath();
+
+// color line using absolute discharge thresholds
+const STEP = 2;
+
+for (let i = 0; i < vals.length - STEP; i += STEP) {
+
+  const v1 = vals[i];
+  const v2 = vals[i + STEP];
+
+  const representativeValue = (v1 + v2) / 2;
+
+  const segment = new Path();
+  segment.move(new Point(getX(i), getY(v1)));
+  segment.addLine(new Point(getX(i + STEP), getY(v2)));
+
+  ctx.addPath(segment);
+  ctx.setStrokeColor(
+    dischargeColor(representativeValue)
+  );
+  ctx.setLineWidth(4);
+  ctx.strokePath();
+}
+  
+  // ===============================
+  // MIN / MAX MARKERS
+  // ===============================
+  const minVal = min;
+  const maxVal = max;
+
+  const minIndex = vals.indexOf(minVal);
+  const maxIndex = vals.indexOf(maxVal);
+
+  function drawDot(x, y, color) {
+    // outer glow
+    const glow = new Path();
+    glow.addEllipse(new Rect(x - 7, y - 7, 14, 14));
+    ctx.addPath(glow);
+    ctx.setFillColor(new Color(color, 0.25));
+    ctx.fillPath();
+
+    // ring
+    const ring = new Path();
+    ring.addEllipse(new Rect(x - 5, y - 5, 10, 10));
+    ctx.addPath(ring);
+    ctx.setFillColor(Color.white());
+    ctx.fillPath();
+
+    // core
+    const core = new Path();
+    core.addEllipse(new Rect(x - 3, y - 3, 6, 6));
+    ctx.addPath(core);
+    ctx.setFillColor(new Color(color));
+    ctx.fillPath();
+  }
+
+  if (minIndex !== -1) {
+    drawDot(
+      getX(minIndex),
+      getY(minVal),
+      dischargeColor(minVal).hex
+    );
+  }
+
+  if (maxIndex !== -1) {
+    drawDot(
+      getX(maxIndex),
+      getY(maxVal),
+      dischargeColor(maxVal).hex
+    );
+  }
+
+  return ctx.getImage();
+}
+
+// ===============================
+// WIDGET
+// ===============================
+const widget = new ListWidget();
+widget.setPadding(padding, padding, padding, padding);
+widget.backgroundImage = getBackground();
+
+// Header row
+const header = widget.addStack();
+header.layoutHorizontally();
+
+const title = header.addText("Rhône discharge");
+title.font = titleFont;
+title.textColor = Color.white();
+title.textOpacity = 0.9;
+
+header.addSpacer();
+const latestTimestamp = data[data.length - 1].t;
+
+const updated = header.addText(
+  `Last measurement ${latestTimestamp.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit"
+  })}`
+);
+
+updated.font = Font.systemFont(10);
+updated.textColor = new Color("#9ca3af");
+updated.textOpacity = 0.8;
+
+widget.addSpacer(6);
+
+// Value
+const valueText = widget.addText(`${current.toFixed(1)} m³ s⁻¹`);
+valueText.font = valueFont;
+valueText.textColor = dischargeColor(current);
+
+widget.addSpacer(4);
+
+// Stats
+const stats = widget.addStack();
+stats.layoutHorizontally();
+stats.spacing = 10;
+
+function stat(label, value, color) {
+  const t = stats.addText(`${label} ${value} m³ s⁻¹`);
+  t.font = Font.systemFont(11);
+  t.textColor = color;
+}
+
+stat(
+  "Min",
+  minV.toFixed(0),
+  dischargeColor(minV)
+);
+stats.addSpacer();
+stat(
+  "Max",
+  maxV.toFixed(0),
+  dischargeColor(maxV)
+);
+stats.addSpacer();
+
+const arrow =
+  trendDirection === "rising" ? "↑"
+  : trendDirection === "falling" ? "↓"
+  : "→";
+
+
+stat(
+  `Trend ${CONFIG.trendHours}h`,
+  `${arrow} ${Math.abs(trendDelta).toFixed(1)}`,
+  trendColor(trendDirection)
+);
+
+widget.addSpacer(8);
+widget.refreshAfterDate =
+  new Date(Date.now() + 10 * 60 * 1000);
+  
+// Chart
+const chart = widget.addImage(buildChart(data));
+chart.cornerRadius = 10;
+chart.imageOpacity = 0.95;
+
+
+Script.setWidget(widget);
+Script.complete();

@@ -60,16 +60,24 @@ if (!json?.plot?.data) {
 // ===============================
 const series = json.plot.data[0];
 
-const times = series.x.map(t => {
+function parseTime(t) {
   const d = new Date(t);
   if (!isNaN(d)) return d;
   if (typeof t === "number") {
     return new Date(t < 1e12 ? t * 1000 : t);
   }
   return new Date(0);
-});
+}
 
-const values = series.y.map(v => Number(v)).filter(v => !isNaN(v));
+// Pair x/y before filtering so a dropped invalid value can't desync the
+// two arrays and shift every later point onto the wrong timestamp.
+const points = series.x
+  .map((t, i) => ({ t: parseTime(t), v: Number(series.y[i]) }))
+  .filter(p => !isNaN(p.v));
+
+if (points.length === 0) {
+  throw new Error("No valid hydrology data available");
+}
 
 // ===============================
 // TIME WINDOW
@@ -77,12 +85,10 @@ const values = series.y.map(v => Number(v)).filter(v => !isNaN(v));
 const now = new Date();
 const cutoff = new Date(now.getTime() - CONFIG.hoursWindow * 60 * 60 * 1000);
 
-let data = times
-  .map((t, i) => ({ t, v: values[i] }))
-  .filter(p => p.t >= cutoff);
+let data = points.filter(p => p.t >= cutoff);
 
 if (data.length < 2) {
-  data = times.map((t, i) => ({ t, v: values[i] }));
+  data = points;
 }
 
 const seriesValues = data.map(d => d.v);
@@ -155,6 +161,7 @@ function createBackground() {
   const ctx = new DrawContext();
   ctx.size = new Size(400, 200);
   ctx.opaque = true;
+  ctx.respectScreenScale = true;
 
   ctx.setFillColor(new Color("#06131a"));
   ctx.fillRect(new Rect(0, 0, 400, 200));
@@ -228,7 +235,7 @@ function dischargeColor(v) {
 
     hex = mixHex(
       GREEN,
-      ORANGE,
+      YELLOW,
       t
     );
 
@@ -246,7 +253,10 @@ function dischargeColor(v) {
 
   } else if (v >= extreme) {
 
-    const t = Math.max(0, v/extreme)
+    // Ramps ORANGE -> RED over the band from `extreme` to 2x `extreme`,
+    // then holds solid RED. Clamped so it can never overshoot RED's
+    // channel values (t must stay within [0, 1]).
+    const t = Math.min(1, Math.max(0, (v - extreme) / extreme));
 
     hex = mixHex(
       ORANGE,
@@ -254,7 +264,7 @@ function dischargeColor(v) {
       t
     );
 
-  } 
+  }
 
   return new Color(hex);
 }
@@ -288,7 +298,18 @@ function buildChart(data) {
   const denom = Math.max(vals.length - 1, 1);
 
   const getX = i => pad + (i / denom) * (w - pad * 2);
-  let getY = v => pad + (1 - (v - min) / range) * (h - pad * 2);
+
+  const totalHours =
+    (endTime.getTime() - startTime.getTime()) / 3600000;
+
+  const labelHeight = 12;
+
+  // Reserves room for the tick labels at the bottom, so the reference
+  // line, guides, area, colored line, and dots all share one scale.
+  const getY = v =>
+    pad +
+    (1 - (v - min) / range) *
+    (h - pad * 2 - labelHeight);
 
   // reference line
   const refY = getY(CONFIG.referenceValue);
@@ -300,24 +321,10 @@ function buildChart(data) {
   ctx.setStrokeColor(new Color("#ffffff", 0.18));
   ctx.setLineWidth(1);
   ctx.strokePath();
-  
+
   // ===============================
 // TIME GUIDES
 // ===============================
-const totalHours =
-  (endTime.getTime() - startTime.getTime()) / 3600000;
-
-const labelHeight = 12;
-
-// leave room for labels at bottom
-const originalGetY = getY;
-const getYWithLabels = v =>
-  pad +
-  (1 - (v - min) / range) *
-  (h - pad * 2 - labelHeight);
-
-// replace getY for everything below
-getY = getYWithLabels;
 
 // number of ticks depending on widget size
 const tickCount =
@@ -413,16 +420,20 @@ for (let i = 0; i <= tickCount; i++) {
 // color line using absolute discharge thresholds
 const STEP = 2;
 
-for (let i = 0; i < vals.length - STEP; i += STEP) {
+for (let i = 0; i < vals.length - 1; i += STEP) {
+
+  // Clamp to the last index so the final segment always reaches the
+  // most recent point instead of stopping STEP points short of it.
+  const j = Math.min(i + STEP, vals.length - 1);
 
   const v1 = vals[i];
-  const v2 = vals[i + STEP];
+  const v2 = vals[j];
 
   const representativeValue = (v1 + v2) / 2;
 
   const segment = new Path();
   segment.move(new Point(getX(i), getY(v1)));
-  segment.addLine(new Point(getX(i + STEP), getY(v2)));
+  segment.addLine(new Point(getX(j), getY(v2)));
 
   ctx.addPath(segment);
   ctx.setStrokeColor(

@@ -349,7 +349,14 @@ if (!json?.plot?.data) {
     const totalHours =
       (endTime.getTime() - startTime.getTime()) / 3600000;
 
-    const labelHeight = 12;
+    // Larger widgets have room to make the hour labels legible instead of
+    // squinting at 9px regardless of size.
+    const tickFontSize =
+      family === "small" ? 10 :
+      family === "medium" ? 11 :
+      12;
+
+    const labelHeight = tickFontSize + 5;
 
     // Reserves room for the tick labels at the bottom, so the reference
     // line, guides, area, colored line, and dots all share one scale.
@@ -394,8 +401,8 @@ if (!json?.plot?.data) {
       return `${date.getDate()}`;
     }
 
-    ctx.setFont(Font.systemFont(9));
-    ctx.setTextColor(new Color("#ffffff", 0.35));
+    ctx.setFont(Font.systemFont(tickFontSize));
+    ctx.setTextColor(new Color("#ffffff", 0.45));
 
     for (let i = 0; i <= tickCount; i++) {
 
@@ -439,9 +446,9 @@ if (!json?.plot?.data) {
       ctx.drawTextInRect(
         label,
         new Rect(
-          x - 20,
+          x - 24,
           h - labelHeight,
-          40,
+          48,
           labelHeight
         )
       );

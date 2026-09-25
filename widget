@@ -19,6 +19,18 @@ const CONFIG = {
     low: 100,
     high: 200,
     extreme: 300
+  },
+
+  // Local notifications when discharge crosses a level. highThreshold
+  // defaults to thresholds.extreme (or the derived "extreme" band for an
+  // override station) when left null. lowThreshold has no official
+  // equivalent, so it stays off unless you set a number (m³/s) — e.g. a
+  // minimum flow a stretch of river needs to be worth visiting.
+  alerts: {
+    enabled: true,
+    lowThreshold: null,
+    highThreshold: null,
+    cooldownHours: 6
   }
 };
 
@@ -38,6 +50,9 @@ if (paramStationId) {
 
 CONFIG.url = `https://www.hydrodaten.admin.ch/plots/p_q_7days/${CONFIG.stationId}_p_q_7days_en.json`;
 CONFIG.cacheFile = `hydro_${CONFIG.stationId}_cache.json`;
+
+// Tapping the widget opens the station's official page.
+const stationUrl = `https://www.hydrodaten.admin.ch/en/seen-und-fluesse/stations/${CONFIG.stationId}`;
 
 // ===============================
 // FILE MANAGER
@@ -106,6 +121,7 @@ if (!json?.plot?.data) {
 
   // Retry sooner than the normal refresh interval.
   errorWidget.refreshAfterDate = new Date(Date.now() + 5 * 60 * 1000);
+  errorWidget.url = stationUrl;
 
   Script.setWidget(errorWidget);
 
@@ -240,6 +256,66 @@ if (!json?.plot?.data) {
     if (dir === "falling") return new Color("#34d399");
     return new Color("#9ca3af");
   }
+
+  // ===============================
+  // THRESHOLD ALERTS
+  // ===============================
+  // Persists the last alert state per station (independent of widget size,
+  // so multiple instances for the same station share one cooldown and don't
+  // double-notify) and fires again only on a state change or once the
+  // cooldown has elapsed — plus a "back to normal" notice when it clears.
+  async function checkAlerts() {
+    if (!CONFIG.alerts.enabled) return;
+
+    const highThreshold = CONFIG.alerts.highThreshold ?? thresholds.extreme;
+    const lowThreshold = CONFIG.alerts.lowThreshold;
+
+    let alertState = "none";
+    if (lowThreshold != null && current <= lowThreshold) alertState = "low";
+    else if (current >= highThreshold) alertState = "high";
+
+    const statePath = fm.joinPath(
+      fm.documentsDirectory(),
+      `hydro_${CONFIG.stationId}_alert_state.json`
+    );
+
+    let prev = { state: "none", notifiedAt: 0 };
+    if (fm.fileExists(statePath)) {
+      try {
+        prev = JSON.parse(fm.readString(statePath));
+      } catch (e) {
+        console.log("Alert state corrupted:", e);
+      }
+    }
+
+    const cooldownMs = CONFIG.alerts.cooldownHours * 60 * 60 * 1000;
+    const cooldownElapsed = Date.now() - (prev.notifiedAt || 0) >= cooldownMs;
+
+    async function notify(title, body) {
+      const n = new Notification();
+      n.title = title;
+      n.body = body;
+      n.sound = "default";
+      await n.schedule();
+      fm.writeString(statePath, JSON.stringify({ state: alertState, notifiedAt: Date.now() }));
+    }
+
+    if (alertState !== "none" && (alertState !== prev.state || cooldownElapsed)) {
+      await notify(
+        `${riverName} discharge ${alertState === "high" ? "high" : "low"}`,
+        alertState === "high"
+          ? `${current.toFixed(1)} m³/s — at or above the ${highThreshold} m³/s alert level.`
+          : `${current.toFixed(1)} m³/s — at or below the ${lowThreshold} m³/s alert level.`
+      );
+    } else if (alertState === "none" && prev.state !== "none") {
+      await notify(
+        `${riverName} discharge back to normal`,
+        `${current.toFixed(1)} m³/s is back within the normal range.`
+      );
+    }
+  }
+
+  await checkAlerts();
 
   // ===============================
   // LAYOUT
@@ -617,90 +693,161 @@ if (!json?.plot?.data) {
   }
 
   // ===============================
-  // WIDGET
+  // LOCK SCREEN / STANDBY (accessory families)
   // ===============================
-  const widget = new ListWidget();
-  widget.setPadding(padding, padding, padding, padding);
-  widget.backgroundImage = getBackground();
+  // These render in a tightly constrained, mostly-monochrome slot the OS
+  // controls (no custom background), so they get their own compact layout
+  // instead of squeezing the full chart widget down.
+  function buildAccessoryWidget(fam) {
+    const widget = new ListWidget();
+    const color = dischargeColor(current);
+    const arrow =
+      trendDirection === "rising" ? "↑"
+      : trendDirection === "falling" ? "↓"
+      : "→";
 
-  // Header row
-  const header = widget.addStack();
-  header.layoutHorizontally();
+    if (fam === "accessoryCircular") {
+      const stack = widget.addStack();
+      stack.layoutVertically();
+      stack.centerAlignContent();
 
-  const title = header.addText(`${riverName} discharge`);
-  title.font = titleFont;
-  title.textColor = Color.white();
-  title.textOpacity = 0.9;
+      const value = stack.addText(current.toFixed(0));
+      value.font = Font.boldSystemFont(20);
+      value.textColor = color;
+      value.centerAlignText();
 
-  header.addSpacer();
-  const latestTimestamp = data[data.length - 1].t;
+      const unit = stack.addText("m³/s");
+      unit.font = Font.systemFont(9);
+      unit.textColor = Color.white();
+      unit.centerAlignText();
 
-  const updatedLabel =
-    `Last measurement ${latestTimestamp.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit"
-    })}` + (usedCache ? " · cached" : "");
+    } else if (fam === "accessoryRectangular") {
+      const top = widget.addStack();
+      top.layoutHorizontally();
 
-  const updated = header.addText(updatedLabel);
+      const name = top.addText(riverName);
+      name.font = Font.mediumSystemFont(12);
+      name.textColor = Color.white();
 
-  updated.font = Font.systemFont(10);
-  // Amber when we fell back to a cached reading, so a stale widget doesn't
-  // look as current as a freshly fetched one.
-  updated.textColor = usedCache ? new Color("#fbbf24") : new Color("#9ca3af");
-  updated.textOpacity = 0.8;
+      top.addSpacer();
 
-  widget.addSpacer(6);
+      const trend = top.addText(arrow);
+      trend.font = Font.mediumSystemFont(12);
+      trend.textColor = Color.white();
 
-  // Value
-  const valueText = widget.addText(`${current.toFixed(1)} m³ s⁻¹`);
-  valueText.font = valueFont;
-  valueText.textColor = dischargeColor(current);
+      widget.addSpacer(2);
 
-  widget.addSpacer(4);
+      const value = widget.addText(`${current.toFixed(1)} m³/s`);
+      value.font = Font.boldSystemFont(16);
+      value.textColor = color;
 
-  // Stats
-  const stats = widget.addStack();
-  stats.layoutHorizontally();
-  stats.spacing = 14;
+    } else {
+      // accessoryInline supports only a single line of text.
+      widget.addText(`${riverName} ${current.toFixed(0)} m³/s ${arrow}`);
+    }
 
-  function stat(label, value, color) {
-    const t = stats.addText(`${label} ${value} m³ s⁻¹`);
-    t.font = Font.systemFont(11);
-    t.textColor = color;
+    widget.url = stationUrl;
+    widget.refreshAfterDate = new Date(Date.now() + 10 * 60 * 1000);
+    return widget;
   }
 
-  stat(
-    "Min",
-    minV.toFixed(0),
-    dischargeColor(minV)
-  );
-  stat(
-    "Max",
-    maxV.toFixed(0),
-    dischargeColor(maxV)
-  );
+  const isAccessoryFamily =
+    family === "accessoryCircular" ||
+    family === "accessoryRectangular" ||
+    family === "accessoryInline";
 
-  const arrow =
-    trendDirection === "rising" ? "↑"
-    : trendDirection === "falling" ? "↓"
-    : "→";
+  if (isAccessoryFamily) {
+    Script.setWidget(buildAccessoryWidget(family));
 
-  stat(
-    `Trend ${CONFIG.trendHours}h`,
-    `${arrow} ${Math.abs(trendDelta).toFixed(1)}`,
-    trendColor(trendDirection)
-  );
+  } else {
 
-  widget.addSpacer(8);
-  widget.refreshAfterDate =
-    new Date(Date.now() + 10 * 60 * 1000);
+    // ===============================
+    // WIDGET
+    // ===============================
+    const widget = new ListWidget();
+    widget.setPadding(padding, padding, padding, padding);
+    widget.backgroundImage = getBackground();
+    widget.url = stationUrl;
 
-  // Chart
-  const chart = widget.addImage(buildChart(data));
-  chart.cornerRadius = 10;
-  chart.imageOpacity = 0.95;
+    // Header row
+    const header = widget.addStack();
+    header.layoutHorizontally();
 
-  Script.setWidget(widget);
+    const title = header.addText(`${riverName} discharge`);
+    title.font = titleFont;
+    title.textColor = Color.white();
+    title.textOpacity = 0.9;
+
+    header.addSpacer();
+    const latestTimestamp = data[data.length - 1].t;
+
+    const updatedLabel =
+      `Last measurement ${latestTimestamp.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit"
+      })}` + (usedCache ? " · cached" : "");
+
+    const updated = header.addText(updatedLabel);
+
+    updated.font = Font.systemFont(10);
+    // Amber when we fell back to a cached reading, so a stale widget doesn't
+    // look as current as a freshly fetched one.
+    updated.textColor = usedCache ? new Color("#fbbf24") : new Color("#9ca3af");
+    updated.textOpacity = 0.8;
+
+    widget.addSpacer(6);
+
+    // Value
+    const valueText = widget.addText(`${current.toFixed(1)} m³ s⁻¹`);
+    valueText.font = valueFont;
+    valueText.textColor = dischargeColor(current);
+
+    widget.addSpacer(4);
+
+    // Stats
+    const stats = widget.addStack();
+    stats.layoutHorizontally();
+    stats.spacing = 14;
+
+    function stat(label, value, color) {
+      const t = stats.addText(`${label} ${value} m³ s⁻¹`);
+      t.font = Font.systemFont(11);
+      t.textColor = color;
+    }
+
+    stat(
+      "Min",
+      minV.toFixed(0),
+      dischargeColor(minV)
+    );
+    stat(
+      "Max",
+      maxV.toFixed(0),
+      dischargeColor(maxV)
+    );
+
+    const arrow =
+      trendDirection === "rising" ? "↑"
+      : trendDirection === "falling" ? "↓"
+      : "→";
+
+    stat(
+      `Trend ${CONFIG.trendHours}h`,
+      `${arrow} ${Math.abs(trendDelta).toFixed(1)}`,
+      trendColor(trendDirection)
+    );
+
+    widget.addSpacer(8);
+    widget.refreshAfterDate =
+      new Date(Date.now() + 10 * 60 * 1000);
+
+    // Chart
+    const chart = widget.addImage(buildChart(data));
+    chart.cornerRadius = 10;
+    chart.imageOpacity = 0.95;
+
+    Script.setWidget(widget);
+  }
 }
 
 Script.complete();

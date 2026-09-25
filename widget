@@ -22,6 +22,20 @@ const CONFIG = {
   }
 };
 
+// ===============================
+// STATION OVERRIDE (widget parameter)
+// ===============================
+// Long-press the widget on the Home Screen -> Edit Widget -> set "Parameter"
+// to another hydrodaten.admin.ch station ID (e.g. "2019") to reuse this same
+// script for a different river/station without touching CONFIG. Leave blank
+// to use CONFIG.stationId.
+const paramStationId = (args.widgetParameter || "").trim();
+const isOverrideStation = paramStationId !== "" && paramStationId !== CONFIG.stationId;
+
+if (paramStationId) {
+  CONFIG.stationId = paramStationId;
+}
+
 CONFIG.url = `https://www.hydrodaten.admin.ch/plots/p_q_7days/${CONFIG.stationId}_p_q_7days_en.json`;
 CONFIG.cacheFile = `hydro_${CONFIG.stationId}_cache.json`;
 
@@ -70,7 +84,9 @@ if (!json?.plot?.data) {
   errorWidget.backgroundColor = new Color("#06131a");
   errorWidget.setPadding(16, 16, 16, 16);
 
-  const errTitle = errorWidget.addText(`${CONFIG.riverName} discharge`);
+  const errTitle = errorWidget.addText(
+    `${isOverrideStation ? `Station ${CONFIG.stationId}` : CONFIG.riverName} discharge`
+  );
   errTitle.font = Font.mediumSystemFont(14);
   errTitle.textColor = Color.white();
   errTitle.textOpacity = 0.9;
@@ -98,7 +114,59 @@ if (!json?.plot?.data) {
   // ===============================
   // DATA
   // ===============================
-  const series = json.plot.data[0];
+  // Some stations publish both "Water level" and "Discharge" series; picking
+  // by name avoids silently charting the wrong one when a station (unlike
+  // the default) has more than one series.
+  const series = json.plot.data.find(s => s.name === "Discharge") || json.plot.data[0];
+
+  // ===============================
+  // STATION METADATA (auto-detected for override stations)
+  // ===============================
+  // CONFIG's riverName/thresholds/referenceValue are hand-tuned for
+  // CONFIG's default station. For any other station picked via the widget
+  // parameter, pull the display name and official flood-stage bands
+  // straight out of the API response instead, since a fixed river's
+  // thresholds are meaningless for a different river's flow.
+  function deriveStationName(apiJson) {
+    const title = apiJson?.plot?.layout?.title;
+    if (typeof title !== "string") return null;
+
+    const cut = title.indexOf(" PQPlot");
+    const full = (cut === -1 ? title : title.slice(0, cut)).trim();
+    if (!full) return null;
+
+    return full.split(" - ")[0].trim() || full;
+  }
+
+  function deriveThresholds(apiJson, dataSeries) {
+    const shapes = apiJson?.plot?.layout?.shapes || [];
+    const axisKey = dataSeries.yaxis || "y";
+    const yref = axisKey === "y" ? "y1" : axisKey;
+
+    const bandStarts = [...new Set(
+      shapes
+        .filter(s => s.type === "rect" && s.yref === yref && typeof s.y0 === "number")
+        .map(s => s.y0)
+    )].sort((a, b) => a - b);
+
+    if (bandStarts.length < 3) return null;
+
+    return { low: bandStarts[0], high: bandStarts[1], extreme: bandStarts[2] };
+  }
+
+  let riverName = CONFIG.riverName;
+  let thresholds = CONFIG.thresholds;
+  let referenceValue = CONFIG.referenceValue;
+
+  if (isOverrideStation) {
+    riverName = deriveStationName(json) || riverName;
+
+    const derivedThresholds = deriveThresholds(json, series);
+    if (derivedThresholds) {
+      thresholds = derivedThresholds;
+      referenceValue = derivedThresholds.low;
+    }
+  }
 
   function parseTime(t) {
     const d = new Date(t);
@@ -259,9 +327,9 @@ if (!json?.plot?.data) {
 
   function dischargeColor(v) {
 
-    const low = CONFIG.thresholds.low;
-    const high = CONFIG.thresholds.high;
-    const extreme = CONFIG.thresholds.extreme;
+    const low = thresholds.low;
+    const high = thresholds.high;
+    const extreme = thresholds.extreme;
 
     let hex;
 
@@ -366,7 +434,7 @@ if (!json?.plot?.data) {
       (h - pad * 2 - labelHeight);
 
     // reference line
-    const refY = getY(CONFIG.referenceValue);
+    const refY = getY(referenceValue);
     const ref = new Path();
     ref.move(new Point(pad, refY));
     ref.addLine(new Point(w - pad, refY));
@@ -559,7 +627,7 @@ if (!json?.plot?.data) {
   const header = widget.addStack();
   header.layoutHorizontally();
 
-  const title = header.addText(`${CONFIG.riverName} discharge`);
+  const title = header.addText(`${riverName} discharge`);
   title.font = titleFont;
   title.textColor = Color.white();
   title.textOpacity = 0.9;

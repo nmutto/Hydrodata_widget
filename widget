@@ -318,31 +318,13 @@ if (!json?.plot?.data) {
   await checkAlerts();
 
   // ===============================
-  // LAYOUT
+  // LAYOUT (medium widget only, for now)
   // ===============================
-  const family = config.widgetFamily;
-
-  let titleFont, valueFont, chartW, chartH, padding;
-
-  if (family === "small") {
-    titleFont = Font.mediumSystemFont(12);
-    valueFont = Font.boldSystemFont(24);
-    chartW = 320;
-    chartH = 80;
-    padding = 10;
-  } else if (family === "medium") {
-    titleFont = Font.mediumSystemFont(14);
-    valueFont = Font.boldSystemFont(30);
-    chartW = 530;
-    chartH = 110;
-    padding = 12;
-  } else {
-    titleFont = Font.mediumSystemFont(16);
-    valueFont = Font.boldSystemFont(38);
-    chartW = 720;
-    chartH = 140;
-    padding = 14;
-  }
+  const titleFont = Font.mediumSystemFont(14);
+  const valueFont = Font.boldSystemFont(30);
+  const chartW = 530;
+  const chartH = 110;
+  const padding = 12;
 
   // ===============================
   // BACKGROUND (cached)
@@ -493,13 +475,7 @@ if (!json?.plot?.data) {
     const totalHours =
       (endTime.getTime() - startTime.getTime()) / 3600000;
 
-    // Larger widgets have room to make the hour labels legible instead of
-    // squinting at 9px regardless of size.
-    const tickFontSize =
-      family === "small" ? 10 :
-      family === "medium" ? 11 :
-      12;
-
+    const tickFontSize = 11;
     const labelHeight = tickFontSize + 5;
 
     // Reserves room for the tick labels at the bottom, so the reference
@@ -524,11 +500,7 @@ if (!json?.plot?.data) {
     // TIME GUIDES
     // ===============================
 
-    // number of ticks depending on widget size
-    const tickCount =
-      family === "small" ? 2 :
-      family === "medium" ? 4 :
-      6;
+    const tickCount = 4;
 
     function formatTick(date) {
       if (totalHours <= 48) {
@@ -584,15 +556,19 @@ if (!json?.plot?.data) {
       ctx.setLineWidth(1);
       ctx.strokePath();
 
-      // label
+      // label — clamped so the first/last labels stay on-canvas instead of
+      // overflowing past the chart edges (they'd otherwise get cut off,
+      // e.g. "15:20" rendering as "15:2").
       const label = formatTick(tickTime);
+      const labelWidth = 48;
+      const labelX = Math.min(Math.max(x - labelWidth / 2, 0), w - labelWidth);
 
       ctx.drawTextInRect(
         label,
         new Rect(
-          x - 24,
+          labelX,
           h - labelHeight,
-          48,
+          labelWidth,
           labelHeight
         )
       );
@@ -693,161 +669,91 @@ if (!json?.plot?.data) {
   }
 
   // ===============================
-  // LOCK SCREEN / STANDBY (accessory families)
+  // WIDGET
   // ===============================
-  // These render in a tightly constrained, mostly-monochrome slot the OS
-  // controls (no custom background), so they get their own compact layout
-  // instead of squeezing the full chart widget down.
-  function buildAccessoryWidget(fam) {
-    const widget = new ListWidget();
-    const color = dischargeColor(current);
-    const arrow =
-      trendDirection === "rising" ? "↑"
-      : trendDirection === "falling" ? "↓"
-      : "→";
+  const widget = new ListWidget();
+  widget.setPadding(padding, padding, padding, padding);
+  widget.backgroundImage = getBackground();
+  widget.url = stationUrl;
 
-    if (fam === "accessoryCircular") {
-      const stack = widget.addStack();
-      stack.layoutVertically();
-      stack.centerAlignContent();
+  // Header row
+  const header = widget.addStack();
+  header.layoutHorizontally();
 
-      const value = stack.addText(current.toFixed(0));
-      value.font = Font.boldSystemFont(20);
-      value.textColor = color;
-      value.centerAlignText();
+  const title = header.addText(`${riverName} discharge`);
+  title.font = titleFont;
+  title.textColor = Color.white();
+  title.textOpacity = 0.9;
 
-      const unit = stack.addText("m³/s");
-      unit.font = Font.systemFont(9);
-      unit.textColor = Color.white();
-      unit.centerAlignText();
+  header.addSpacer();
+  const latestTimestamp = data[data.length - 1].t;
 
-    } else if (fam === "accessoryRectangular") {
-      const top = widget.addStack();
-      top.layoutHorizontally();
+  const updatedLabel =
+    `Last measurement ${latestTimestamp.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit"
+    })}` + (usedCache ? " · cached" : "");
 
-      const name = top.addText(riverName);
-      name.font = Font.mediumSystemFont(12);
-      name.textColor = Color.white();
+  const updated = header.addText(updatedLabel);
 
-      top.addSpacer();
+  updated.font = Font.systemFont(10);
+  // Amber when we fell back to a cached reading, so a stale widget doesn't
+  // look as current as a freshly fetched one.
+  updated.textColor = usedCache ? new Color("#fbbf24") : new Color("#9ca3af");
+  updated.textOpacity = 0.8;
 
-      const trend = top.addText(arrow);
-      trend.font = Font.mediumSystemFont(12);
-      trend.textColor = Color.white();
+  widget.addSpacer(6);
 
-      widget.addSpacer(2);
+  // Value
+  const valueText = widget.addText(`${current.toFixed(1)} m³ s⁻¹`);
+  valueText.font = valueFont;
+  valueText.textColor = dischargeColor(current);
 
-      const value = widget.addText(`${current.toFixed(1)} m³/s`);
-      value.font = Font.boldSystemFont(16);
-      value.textColor = color;
+  widget.addSpacer(4);
 
-    } else {
-      // accessoryInline supports only a single line of text.
-      widget.addText(`${riverName} ${current.toFixed(0)} m³/s ${arrow}`);
-    }
+  // Stats
+  const stats = widget.addStack();
+  stats.layoutHorizontally();
+  stats.spacing = 14;
 
-    widget.url = stationUrl;
-    widget.refreshAfterDate = new Date(Date.now() + 10 * 60 * 1000);
-    return widget;
+  function stat(label, value, color) {
+    const t = stats.addText(`${label} ${value} m³ s⁻¹`);
+    t.font = Font.systemFont(11);
+    t.textColor = color;
   }
 
-  const isAccessoryFamily =
-    family === "accessoryCircular" ||
-    family === "accessoryRectangular" ||
-    family === "accessoryInline";
+  stat(
+    "Min",
+    minV.toFixed(0),
+    dischargeColor(minV)
+  );
+  stat(
+    "Max",
+    maxV.toFixed(0),
+    dischargeColor(maxV)
+  );
 
-  if (isAccessoryFamily) {
-    Script.setWidget(buildAccessoryWidget(family));
+  const arrow =
+    trendDirection === "rising" ? "↑"
+    : trendDirection === "falling" ? "↓"
+    : "→";
 
-  } else {
+  stat(
+    `Trend ${CONFIG.trendHours}h`,
+    `${arrow} ${Math.abs(trendDelta).toFixed(1)}`,
+    trendColor(trendDirection)
+  );
 
-    // ===============================
-    // WIDGET
-    // ===============================
-    const widget = new ListWidget();
-    widget.setPadding(padding, padding, padding, padding);
-    widget.backgroundImage = getBackground();
-    widget.url = stationUrl;
+  widget.addSpacer(8);
+  widget.refreshAfterDate =
+    new Date(Date.now() + 10 * 60 * 1000);
 
-    // Header row
-    const header = widget.addStack();
-    header.layoutHorizontally();
+  // Chart
+  const chart = widget.addImage(buildChart(data));
+  chart.cornerRadius = 10;
+  chart.imageOpacity = 0.95;
 
-    const title = header.addText(`${riverName} discharge`);
-    title.font = titleFont;
-    title.textColor = Color.white();
-    title.textOpacity = 0.9;
-
-    header.addSpacer();
-    const latestTimestamp = data[data.length - 1].t;
-
-    const updatedLabel =
-      `Last measurement ${latestTimestamp.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit"
-      })}` + (usedCache ? " · cached" : "");
-
-    const updated = header.addText(updatedLabel);
-
-    updated.font = Font.systemFont(10);
-    // Amber when we fell back to a cached reading, so a stale widget doesn't
-    // look as current as a freshly fetched one.
-    updated.textColor = usedCache ? new Color("#fbbf24") : new Color("#9ca3af");
-    updated.textOpacity = 0.8;
-
-    widget.addSpacer(6);
-
-    // Value
-    const valueText = widget.addText(`${current.toFixed(1)} m³ s⁻¹`);
-    valueText.font = valueFont;
-    valueText.textColor = dischargeColor(current);
-
-    widget.addSpacer(4);
-
-    // Stats
-    const stats = widget.addStack();
-    stats.layoutHorizontally();
-    stats.spacing = 14;
-
-    function stat(label, value, color) {
-      const t = stats.addText(`${label} ${value} m³ s⁻¹`);
-      t.font = Font.systemFont(11);
-      t.textColor = color;
-    }
-
-    stat(
-      "Min",
-      minV.toFixed(0),
-      dischargeColor(minV)
-    );
-    stat(
-      "Max",
-      maxV.toFixed(0),
-      dischargeColor(maxV)
-    );
-
-    const arrow =
-      trendDirection === "rising" ? "↑"
-      : trendDirection === "falling" ? "↓"
-      : "→";
-
-    stat(
-      `Trend ${CONFIG.trendHours}h`,
-      `${arrow} ${Math.abs(trendDelta).toFixed(1)}`,
-      trendColor(trendDirection)
-    );
-
-    widget.addSpacer(8);
-    widget.refreshAfterDate =
-      new Date(Date.now() + 10 * 60 * 1000);
-
-    // Chart
-    const chart = widget.addImage(buildChart(data));
-    chart.cornerRadius = 10;
-    chart.imageOpacity = 0.95;
-
-    Script.setWidget(widget);
-  }
+  Script.setWidget(widget);
 }
 
 Script.complete();

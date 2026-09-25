@@ -4,15 +4,7 @@ A [Scriptable](https://scriptable.app) widget for iOS that shows live river disc
 
 ## Screenshots
 
-| Small | Medium | Large |
-| --- | --- | --- |
-| ![Small widget](screenshots/small.png) | ![Medium widget](screenshots/medium.png) | ![Large widget](screenshots/large.png) |
-
-| Lock Screen | No-data fallback |
-| --- | --- |
-| ![Lock Screen widget](screenshots/lock-screen.png) | ![Fallback widget](screenshots/fallback.png) |
-
-*(Add your own screenshots to a `screenshots/` folder using these filenames, or update the paths above.)*
+![Medium widget](screenshots/medium.jpg)
 
 ## Requirements
 
@@ -23,7 +15,7 @@ A [Scriptable](https://scriptable.app) widget for iOS that shows live river disc
 1. Open Scriptable and create a new script.
 2. Paste in the contents of [`widget`](widget).
 3. Give the script a name (e.g. "Hydrodata").
-4. Long-press your Home Screen (or Lock Screen) → add a widget → choose **Scriptable** → pick your script and a size.
+4. Long-press your Home Screen → add a widget → choose **Scriptable** → pick your script and the **Medium** size.
 
 ## Usage
 
@@ -41,11 +33,11 @@ To run several widgets — each for a different river — off the *same* script:
 
 Find a station ID from its URL on [hydrodaten.admin.ch](https://www.hydrodaten.admin.ch) — e.g. `.../stations/2019` → parameter `2019`.
 
-### Widget sizes
+### Widget size
 
-- **Small / Medium / Large** (Home Screen): full layout with header, current value, min/max, trend, and chart.
-- **Lock Screen** (`accessoryCircular` / `accessoryRectangular` / `accessoryInline`) and **StandBy**: compact value + trend, no chart.
-- Tapping any size opens that station's page on hydrodaten.admin.ch.
+Only the **Medium** Home Screen widget is supported for now — layout, fonts, and chart dimensions are all fixed to that size. Small, Large, and Lock Screen/StandBy aren't handled specially; they'll still render (using the Medium layout squeezed into whatever frame iOS gives them) but aren't a supported target yet.
+
+Tapping the widget opens the station's page on hydrodaten.admin.ch.
 
 ### Threshold alerts
 
@@ -78,5 +70,6 @@ All settings live in `CONFIG` at the top of the script:
 
 ## Limitations
 
+- **Only the Medium widget size is supported for now.** Small, Large, and Lock Screen/StandBy aren't laid out for their own dimensions.
 - **Apple Watch Smart Stack isn't supported.** That requires a native watchOS app with its own WidgetKit extension, built and shipped via Xcode — Scriptable has no companion watch app, so there's no way to get a Scriptable script onto the watch.
 - Data and thresholds come entirely from the public hydrodaten.admin.ch API; if a station's response shape changes, parsing may need updating.

@@ -13,7 +13,7 @@ A [Scriptable](https://scriptable.app) widget for iOS that shows live river disc
 ## Installation
 
 1. Open Scriptable and create a new script.
-2. Paste in the contents of [`widget`](widget).
+2. Paste in the contents of [`widget.js`](widget.js).
 3. Give the script a name (e.g. "Hydrodata").
 4. Long-press your Home Screen → add a widget → choose **Scriptable** → pick your script and the **Medium** size.
 

@@ -251,6 +251,9 @@ if (!json?.plot?.data) {
   const titleFont = Font.mediumSystemFont(14);
   const valueFont = Font.boldSystemFont(30);
   const padding = 12;
+  // Tighter at the bottom: the chart's own tick labels already leave some
+  // breathing room, so the full padding there just reads as dead space.
+  const bottomPadding = 6;
 
   // Medium widget size (pt) keyed by portrait screen size (pt). iOS
   // aspect-fits the chart image into whatever room the text rows leave,
@@ -278,15 +281,15 @@ if (!json?.plot?.data) {
     return MEDIUM_WIDGET_SIZES[key] || [338, 158];
   }
 
-  // Approximate height of everything stacked above the chart: header,
-  // value, stats rows and the spacers between them. Erring slightly high
-  // keeps the chart full-width (at worst leaving a sliver of vertical
-  // space) instead of too tall, which would shrink it horizontally again.
-  const contentAboveChart = 88;
+  // Height of everything stacked above the chart (header, value, stats
+  // rows and the spacers between them), measured from an on-device
+  // screenshot. Too high leaves space under the chart; too low makes the
+  // chart height-limited, so it stops short of the right edge instead.
+  const contentAboveChart = 86;
 
   const [widgetW, widgetH] = mediumWidgetSize();
   const slotW = widgetW - padding * 2;
-  const slotH = widgetH - padding * 2 - contentAboveChart;
+  const slotH = widgetH - padding - bottomPadding - contentAboveChart;
 
   // Drawing width stays fixed so fonts and line weights look the same on
   // every device; only the height follows the slot's aspect ratio.
@@ -638,7 +641,7 @@ if (!json?.plot?.data) {
   // WIDGET
   // ===============================
   const widget = new ListWidget();
-  widget.setPadding(padding, padding, padding, padding);
+  widget.setPadding(padding, padding, bottomPadding, padding);
   widget.backgroundImage = getBackground();
   widget.url = stationUrl;
 

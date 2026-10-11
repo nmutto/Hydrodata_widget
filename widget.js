@@ -428,79 +428,78 @@ if (!json?.plot?.data) {
     // TIME GUIDES
     // ===============================
 
-    const tickCount = 4;
+    // Guides snap to round clock times (rather than evenly splitting the
+    // window at odd minutes like 15:20), with faint unlabeled minor guides
+    // between labeled major ones.
+    const HOUR = 3600000;
+    const DAY = 24 * HOUR;
+    const [majorStep, minorStep] =
+      totalHours <= 6 ? [HOUR, HOUR / 4]
+      : totalHours <= 12 ? [2 * HOUR, HOUR]
+      : totalHours <= 24 ? [3 * HOUR, HOUR]
+      : totalHours <= 48 ? [6 * HOUR, 3 * HOUR]
+      : totalHours <= 24 * 14 ? [DAY, 6 * HOUR]
+      : [7 * DAY, DAY];
 
     function formatTick(date) {
-      if (totalHours <= 48) {
+      if (majorStep < DAY) {
         return date.toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit"
         });
       }
 
-      if (totalHours <= 24 * 14) {
-        return `${date.getDate()}/${date.getMonth() + 1}`;
-      }
+      return `${date.getDate()}/${date.getMonth() + 1}`;
+    }
 
-      return `${date.getDate()}`;
+    const startMs = startTime.getTime();
+    const spanMs = Math.max(endTime.getTime() - startMs, 1);
+    const timeX = t => pad + ((t - startMs) / spanMs) * (w - pad * 2);
+    const guideBottom = h - pad - labelHeight;
+
+    function drawGuide(x, color) {
+      const guide = new Path();
+      guide.move(new Point(x, pad));
+      guide.addLine(new Point(x, guideBottom));
+      ctx.addPath(guide);
+      ctx.setStrokeColor(color);
+      ctx.setLineWidth(1);
+      ctx.strokePath();
+    }
+
+    // Steps are aligned to local midnight so e.g. 3h ticks land on
+    // 00/03/06…, not on hours offset by the timezone.
+    const tzOffsetMs = startTime.getTimezoneOffset() * 60000;
+    const firstTick = step =>
+      Math.ceil((startMs - tzOffsetMs) / step) * step + tzOffsetMs;
+
+    for (let t = firstTick(minorStep); t < endTime.getTime(); t += minorStep) {
+      if ((t - tzOffsetMs) % majorStep === 0) continue;
+      drawGuide(timeX(t), new Color("#ffffff", 0.04));
     }
 
     ctx.setFont(Font.systemFont(tickFontSize));
     ctx.setTextColor(new Color("#ffffff", 0.45));
+    ctx.setTextAlignedCenter();
 
-    for (let i = 0; i <= tickCount; i++) {
+    const labelWidth = 48;
 
-      const frac = i / tickCount;
+    for (let t = firstTick(majorStep); t < endTime.getTime(); t += majorStep) {
+      const x = timeX(t);
+      drawGuide(x, new Color("#ffffff", 0.1));
 
-      const x =
-        pad +
-        frac * (w - pad * 2);
-
-      const tickTime =
-        new Date(
-          startTime.getTime() +
-          frac *
-          (endTime.getTime() - startTime.getTime())
-        );
-
-      // vertical guide
-      const guide = new Path();
-      guide.move(new Point(x, pad));
-      guide.addLine(
-        new Point(
-          x,
-          h - pad - labelHeight
-        )
-      );
-
-      ctx.addPath(guide);
-
-      ctx.setStrokeColor(
-        i === tickCount
-          ? new Color("#ffffff", 0.18)
-          : new Color("#ffffff", 0.08)
-      );
-
-      ctx.setLineWidth(1);
-      ctx.strokePath();
-
-      // label — clamped so the first/last labels stay on-canvas instead of
-      // overflowing past the chart edges (they'd otherwise get cut off,
-      // e.g. "15:20" rendering as "15:2").
-      const label = formatTick(tickTime);
-      const labelWidth = 48;
-      const labelX = Math.min(Math.max(x - labelWidth / 2, 0), w - labelWidth);
+      // Skip labels that would hang off the canvas edges rather than
+      // clamping them inward, which would misalign them with their guide.
+      if (x - labelWidth / 2 < 0 || x + labelWidth / 2 > w) continue;
 
       ctx.drawTextInRect(
-        label,
-        new Rect(
-          labelX,
-          h - labelHeight,
-          labelWidth,
-          labelHeight
-        )
+        formatTick(new Date(t)),
+        new Rect(x - labelWidth / 2, h - labelHeight, labelWidth, labelHeight)
       );
     }
+
+    // "now" edge
+    drawGuide(w - pad, new Color("#ffffff", 0.18));
 
     // area fill — tinted by the current reading's severity, not a fixed blue
     const area = new Path();

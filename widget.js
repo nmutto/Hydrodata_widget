@@ -250,9 +250,48 @@ if (!json?.plot?.data) {
   // ===============================
   const titleFont = Font.mediumSystemFont(14);
   const valueFont = Font.boldSystemFont(30);
-  const chartW = 530;
-  const chartH = 110;
   const padding = 12;
+
+  // Medium widget size (pt) keyed by portrait screen size (pt). iOS
+  // aspect-fits the chart image into whatever room the text rows leave,
+  // so a chart whose aspect ratio doesn't match that slot gets scaled
+  // down and stops short of the right edge.
+  const MEDIUM_WIDGET_SIZES = {
+    "440x956": [364, 170],
+    "430x932": [364, 170],
+    "428x926": [364, 170],
+    "414x896": [360, 169],
+    "414x736": [348, 157],
+    "402x874": [338, 158],
+    "393x852": [338, 158],
+    "390x844": [338, 158],
+    "375x812": [329, 155],
+    "375x667": [321, 148],
+    "320x568": [292, 141]
+  };
+
+  function mediumWidgetSize() {
+    const screen = Device.screenSize();
+    const key =
+      `${Math.min(screen.width, screen.height)}x` +
+      `${Math.max(screen.width, screen.height)}`;
+    return MEDIUM_WIDGET_SIZES[key] || [338, 158];
+  }
+
+  // Approximate height of everything stacked above the chart: header,
+  // value, stats rows and the spacers between them. Erring slightly high
+  // keeps the chart full-width (at worst leaving a sliver of vertical
+  // space) instead of too tall, which would shrink it horizontally again.
+  const contentAboveChart = 88;
+
+  const [widgetW, widgetH] = mediumWidgetSize();
+  const slotW = widgetW - padding * 2;
+  const slotH = widgetH - padding * 2 - contentAboveChart;
+
+  // Drawing width stays fixed so fonts and line weights look the same on
+  // every device; only the height follows the slot's aspect ratio.
+  const chartW = 530;
+  const chartH = Math.round(chartW * slotH / slotW);
 
   // ===============================
   // BACKGROUND (cached)

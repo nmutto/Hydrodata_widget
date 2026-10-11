@@ -35,7 +35,7 @@ Find a station ID from its URL on [hydrodaten.admin.ch](https://www.hydrodaten.a
 
 ### Widget size
 
-Only the **Medium** Home Screen widget is supported for now — layout, fonts, and chart dimensions are all fixed to that size. Small, Large, and Lock Screen/StandBy aren't handled specially; they'll still render (using the Medium layout squeezed into whatever frame iOS gives them) but aren't a supported target yet.
+Only the **Medium** Home Screen widget is supported for now — layout and fonts are fixed to that size, and the chart's proportions are matched to your iPhone's Medium widget dimensions (looked up from the screen size) so it fills the available space. Unrecognized screen sizes, such as iPads, fall back to standard 6.1" iPhone proportions, so the chart may not fill the widget exactly there. Small, Large, and Lock Screen/StandBy aren't handled specially; they'll still render (using the Medium layout squeezed into whatever frame iOS gives them) but aren't a supported target yet.
 
 Tapping the widget opens the station's page on hydrodaten.admin.ch.
 

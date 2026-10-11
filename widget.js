@@ -207,7 +207,6 @@ function buildChart() {
   ctx.opaque = false;
   ctx.respectScreenScale = true;
 
-  const getX = i => pad + (i / Math.max(vals.length - 1, 1)) * (w - pad * 2);
   // Leaves room at the bottom for the tick labels.
   const getY = v => pad + (1 - (v - minV) / (maxV - minV || 1)) * (guideBottom - pad);
 
@@ -241,6 +240,9 @@ function buildChart() {
     : [7 * DAY, DAY];
 
   const timeX = t => pad + ((t - startMs) / spanMs) * (w - pad * 2);
+  // Readings are placed by timestamp, not index, so a reporting gap can't
+  // shift the line out of sync with the time guides.
+  const getX = i => timeX(data[i].t.getTime());
   const tz = data[0].t.getTimezoneOffset() * 60000;
   const firstTick = step => Math.ceil((startMs - tz) / step) * step + tz;
   const guide = (x, alpha) => line(x, pad, x, guideBottom, new Color("#ffffff", alpha));

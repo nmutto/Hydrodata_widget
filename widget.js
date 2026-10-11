@@ -283,12 +283,22 @@ function buildChart() {
   ctx.setFillColor(dischargeColor(current, 0.14));
   ctx.fillPath();
 
-  // line colored per segment; last segment clamped to reach the newest point
-  const STEP = 2;
-  for (let i = 0; i < vals.length - 1; i += STEP) {
-    const j = Math.min(i + STEP, vals.length - 1);
-    line(getX(i), getY(vals[i]), getX(j), getY(vals[j]), dischargeColor((vals[i] + vals[j]) / 2), 4);
-  }
+  // Line through every reading, colored per segment. DrawContext only has
+  // butt line caps, so a dot the width of the line rounds each joint
+  // instead of leaving a notch where two segments meet at an angle.
+  const LINE_WIDTH = 4;
+  vals.forEach((v, i) => {
+    const x = getX(i);
+    const y = getY(v);
+    if (i > 0) {
+      line(getX(i - 1), getY(vals[i - 1]), x, y, dischargeColor((vals[i - 1] + v) / 2), LINE_WIDTH);
+    }
+    const joint = new Path();
+    joint.addEllipse(new Rect(x - LINE_WIDTH / 2, y - LINE_WIDTH / 2, LINE_WIDTH, LINE_WIDTH));
+    ctx.addPath(joint);
+    ctx.setFillColor(dischargeColor(v));
+    ctx.fillPath();
+  });
 
   // min / max markers: glow, white ring, colored core
   for (const v of [minV, maxV]) {

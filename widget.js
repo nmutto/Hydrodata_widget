@@ -4,725 +4,354 @@
 const CONFIG = {
   stationId: "2606",
   riverName: "Rhône",
-
-  bgFile: "hydro_bg.png",
-
   hoursWindow: 24,
   trendHours: 1,
   // Below this fraction of change (over trendHours) the trend reads "stable".
   trendStablePercent: 0.05,
-
   referenceValue: 200,
-
   // Absolute discharge thresholds (m³/s)
-  thresholds: {
-    low: 100,
-    high: 200,
-    extreme: 300
-  }
+  thresholds: { low: 100, high: 200, extreme: 300 }
 };
 
-// ===============================
-// STATION OVERRIDE (widget parameter)
-// ===============================
-// Long-press the widget on the Home Screen -> Edit Widget -> set "Parameter"
-// to another hydrodaten.admin.ch station ID (e.g. "2019") to reuse this same
-// script for a different river/station without touching CONFIG. Leave blank
-// to use CONFIG.stationId.
-const paramStationId = (args.widgetParameter || "").trim();
-const isOverrideStation = paramStationId !== "" && paramStationId !== CONFIG.stationId;
+// Widget parameter = another hydrodaten.admin.ch station ID (e.g. "2019")
+// to reuse this script for a different river. Blank = CONFIG.stationId.
+const param = (args.widgetParameter || "").trim();
+const isOverride = param !== "" && param !== CONFIG.stationId;
+const stationId = param || CONFIG.stationId;
+const stationUrl = `https://www.hydrodaten.admin.ch/en/seen-und-fluesse/stations/${stationId}`;
 
-if (paramStationId) {
-  CONFIG.stationId = paramStationId;
-}
-
-CONFIG.url = `https://www.hydrodaten.admin.ch/plots/p_q_7days/${CONFIG.stationId}_p_q_7days_en.json`;
-CONFIG.cacheFile = `hydro_${CONFIG.stationId}_cache.json`;
-
-// Tapping the widget opens the station's official page.
-const stationUrl = `https://www.hydrodaten.admin.ch/en/seen-und-fluesse/stations/${CONFIG.stationId}`;
-
-// ===============================
-// FILE MANAGER
-// ===============================
-const fm = FileManager.local();
-const cachePath = fm.joinPath(fm.documentsDirectory(), CONFIG.cacheFile);
-const bgPath = fm.joinPath(fm.documentsDirectory(), CONFIG.bgFile);
+const HOUR = 3600000;
+const BG = new Color("#071922");
 
 // ===============================
 // FETCH + CACHE
 // ===============================
+const fm = FileManager.local();
+const cachePath = fm.joinPath(fm.documentsDirectory(), `hydro_${stationId}_cache.json`);
+
 let json = null;
 let usedCache = false;
 
 try {
-  const req = new Request(CONFIG.url);
-  json = await req.loadJSON();
-
+  json = await new Request(
+    `https://www.hydrodaten.admin.ch/plots/p_q_7days/${stationId}_p_q_7days_en.json`
+  ).loadJSON();
   if (!json?.plot?.data) throw new Error("Invalid API structure");
-
   fm.writeString(cachePath, JSON.stringify(json));
 } catch (e) {
   console.log("Network failed, using cache:", e);
-
-  if (fm.fileExists(cachePath)) {
-    try {
-      const cached = JSON.parse(fm.readString(cachePath));
-      if (cached?.plot?.data) {
-        json = cached;
-        usedCache = true;
-      }
-    } catch (err) {
-      console.log("Cache corrupted:", err);
-    }
+  try {
+    json = JSON.parse(fm.readString(cachePath));
+    usedCache = true;
+  } catch {
+    json = null;
   }
 }
 
 if (!json?.plot?.data) {
-
-  // ===============================
-  // NO DATA — graceful fallback widget
-  // ===============================
-  const errorWidget = new ListWidget();
-  errorWidget.backgroundColor = new Color("#06131a");
-  errorWidget.setPadding(16, 16, 16, 16);
-
-  const errTitle = errorWidget.addText(
-    `${isOverrideStation ? `Station ${CONFIG.stationId}` : CONFIG.riverName} discharge`
-  );
-  errTitle.font = Font.mediumSystemFont(14);
-  errTitle.textColor = Color.white();
-  errTitle.textOpacity = 0.9;
-
-  errorWidget.addSpacer(8);
-
-  const errMsg = errorWidget.addText("No data available");
-  errMsg.font = Font.boldSystemFont(16);
-  errMsg.textColor = new Color("#fb7185");
-
-  errorWidget.addSpacer(4);
-
-  const errSub = errorWidget.addText("Network failed and no cached reading was found.");
-  errSub.font = Font.systemFont(11);
-  errSub.textColor = new Color("#9ca3af");
-  errSub.textOpacity = 0.8;
-
+  const w = new ListWidget();
+  w.backgroundColor = BG;
+  w.setPadding(16, 16, 16, 16);
+  w.url = stationUrl;
   // Retry sooner than the normal refresh interval.
-  errorWidget.refreshAfterDate = new Date(Date.now() + 5 * 60 * 1000);
-  errorWidget.url = stationUrl;
-
-  Script.setWidget(errorWidget);
-
-} else {
-
-  // ===============================
-  // DATA
-  // ===============================
-  // Some stations publish both "Water level" and "Discharge" series; picking
-  // by name avoids silently charting the wrong one when a station (unlike
-  // the default) has more than one series.
-  const series = json.plot.data.find(s => s.name === "Discharge") || json.plot.data[0];
-
-  // ===============================
-  // STATION METADATA (auto-detected for override stations)
-  // ===============================
-  // CONFIG's riverName/thresholds/referenceValue are hand-tuned for
-  // CONFIG's default station. For any other station picked via the widget
-  // parameter, pull the display name and official flood-stage bands
-  // straight out of the API response instead, since a fixed river's
-  // thresholds are meaningless for a different river's flow.
-  function deriveStationName(apiJson) {
-    const title = apiJson?.plot?.layout?.title;
-    if (typeof title !== "string") return null;
-
-    const cut = title.indexOf(" PQPlot");
-    const full = (cut === -1 ? title : title.slice(0, cut)).trim();
-    if (!full) return null;
-
-    return full.split(" - ")[0].trim() || full;
-  }
-
-  function deriveThresholds(apiJson, dataSeries) {
-    const shapes = apiJson?.plot?.layout?.shapes || [];
-    const axisKey = dataSeries.yaxis || "y";
-    const yref = axisKey === "y" ? "y1" : axisKey;
-
-    const bandStarts = [...new Set(
-      shapes
-        .filter(s => s.type === "rect" && s.yref === yref && typeof s.y0 === "number")
-        .map(s => s.y0)
-    )].sort((a, b) => a - b);
-
-    if (bandStarts.length < 3) return null;
-
-    return { low: bandStarts[0], high: bandStarts[1], extreme: bandStarts[2] };
-  }
-
-  let riverName = CONFIG.riverName;
-  let thresholds = CONFIG.thresholds;
-  let referenceValue = CONFIG.referenceValue;
-
-  if (isOverrideStation) {
-    riverName = deriveStationName(json) || riverName;
-
-    const derivedThresholds = deriveThresholds(json, series);
-    if (derivedThresholds) {
-      thresholds = derivedThresholds;
-      referenceValue = derivedThresholds.low;
-    }
-  }
-
-  function parseTime(t) {
-    const d = new Date(t);
-    if (!isNaN(d)) return d;
-    if (typeof t === "number") {
-      return new Date(t < 1e12 ? t * 1000 : t);
-    }
-    return new Date(0);
-  }
-
-  // Pair x/y before filtering so a dropped invalid value can't desync the
-  // two arrays and shift every later point onto the wrong timestamp.
-  const points = series.x
-    .map((t, i) => ({ t: parseTime(t), v: Number(series.y[i]) }))
-    .filter(p => !isNaN(p.v));
-
-  if (points.length === 0) {
-    throw new Error("No valid hydrology data available");
-  }
-
-  // ===============================
-  // TIME WINDOW
-  // ===============================
-  const now = new Date();
-  const cutoff = new Date(now.getTime() - CONFIG.hoursWindow * 60 * 60 * 1000);
-
-  let data = points.filter(p => p.t >= cutoff);
-
-  if (data.length < 2) {
-    data = points;
-  }
-
-  const seriesValues = data.map(d => d.v);
-
-  // ===============================
-  // STATS
-  // ===============================
-  let minV = Infinity;
-  let maxV = -Infinity;
-
-  for (const v of seriesValues) {
-    if (v < minV) minV = v;
-    if (v > maxV) maxV = v;
-  }
-
-  const current = seriesValues[seriesValues.length - 1];
-
-  // ===============================
-  // TREND
-  // ===============================
-  const trendCutoff = new Date(now.getTime() - CONFIG.trendHours * 60 * 60 * 1000);
-
-  const pastPoint = data.find(p => p.t >= trendCutoff);
-  const pastValue = pastPoint ? pastPoint.v : seriesValues[0];
-
-  const trendDelta = current - pastValue;
-
-  // Scales with the river's own flow instead of a fixed m³/s cutoff, so a
-  // 10 m³/s wobble doesn't read as "rising" at low flow, or get lost as
-  // noise during a flood. Floored at 1 m³/s so near-zero flow doesn't make
-  // the threshold vanish.
-  const trendThreshold = Math.max(Math.abs(pastValue) * CONFIG.trendStablePercent, 1);
-
-  const trendDirection =
-    Math.abs(trendDelta) < trendThreshold ? "stable"
-    : trendDelta > 0 ? "rising"
-    : "falling";
-
-  function trendColor(dir) {
-    if (dir === "rising") return new Color("#fb7185");
-    if (dir === "falling") return new Color("#34d399");
-    return new Color("#9ca3af");
-  }
-
-  // ===============================
-  // LAYOUT (medium widget only, for now)
-  // ===============================
-  const titleFont = Font.mediumSystemFont(14);
-  const valueFont = Font.boldSystemFont(30);
-  const padding = 12;
-  // Tighter at the bottom: the chart's own tick labels already leave some
-  // breathing room, so the full padding there just reads as dead space.
-  const bottomPadding = 6;
-
-  // Medium widget size (pt) keyed by portrait screen size (pt). iOS
-  // aspect-fits the chart image into whatever room the text rows leave,
-  // so a chart whose aspect ratio doesn't match that slot gets scaled
-  // down and stops short of the right edge.
-  const MEDIUM_WIDGET_SIZES = {
-    "440x956": [364, 170],
-    "430x932": [364, 170],
-    "428x926": [364, 170],
-    "414x896": [360, 169],
-    "414x736": [348, 157],
-    "402x874": [338, 158],
-    "393x852": [338, 158],
-    "390x844": [338, 158],
-    "375x812": [329, 155],
-    "375x667": [321, 148],
-    "320x568": [292, 141]
-  };
-
-  function mediumWidgetSize() {
-    const screen = Device.screenSize();
-    const key =
-      `${Math.min(screen.width, screen.height)}x` +
-      `${Math.max(screen.width, screen.height)}`;
-    return MEDIUM_WIDGET_SIZES[key] || [338, 158];
-  }
-
-  // Height of everything stacked above the chart (header, value, stats
-  // rows and the spacers between them), measured from an on-device
-  // screenshot. Too high leaves space under the chart; too low makes the
-  // chart height-limited, so it stops short of the right edge instead.
-  const contentAboveChart = 86;
-
-  const [widgetW, widgetH] = mediumWidgetSize();
-  const slotW = widgetW - padding * 2;
-  const slotH = widgetH - padding - bottomPadding - contentAboveChart;
-
-  // Drawing width stays fixed so fonts and line weights look the same on
-  // every device; only the height follows the slot's aspect ratio.
-  const chartW = 530;
-  const chartH = Math.round(chartW * slotH / slotW);
-
-  // ===============================
-  // BACKGROUND (cached)
-  // ===============================
-  function createBackground() {
-    const ctx = new DrawContext();
-    ctx.size = new Size(400, 200);
-    ctx.opaque = true;
-    ctx.respectScreenScale = true;
-
-    ctx.setFillColor(new Color("#06131a"));
-    ctx.fillRect(new Rect(0, 0, 400, 200));
-
-    ctx.setFillColor(new Color("#0b2a3a", 0.25));
-    for (let i = 0; i < 20; i++) {
-      ctx.fillRect(new Rect(0, i * 10, 400, 10));
-    }
-
-    return ctx.getImage();
-  }
-
-  function getBackground() {
-    if (fm.fileExists(bgPath)) return fm.readImage(bgPath);
-    const img = createBackground();
-    fm.writeImage(bgPath, img);
-    return img;
-  }
-
-  // ===============================
-  // ABSOLUTE DISCHARGE COLORS
-  // ===============================
-  function lerp(a, b, t) {
-    return a + (b - a) * t;
-  }
-
-  function hexToRgb(hex) {
-    const c = hex.replace("#", "");
-    return {
-      r: parseInt(c.slice(0, 2), 16),
-      g: parseInt(c.slice(2, 4), 16),
-      b: parseInt(c.slice(4, 6), 16)
-    };
-  }
-
-  function mixHex(c1, c2, t) {
-    const r = Math.round(lerp(c1.r, c2.r, t));
-    const g = Math.round(lerp(c1.g, c2.g, t));
-    const b = Math.round(lerp(c1.b, c2.b, t));
-
-    const toHex = v => v.toString(16).padStart(2, "0");
-    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-  }
-
-  const GREEN  = hexToRgb("#34d399");
-  const YELLOW = hexToRgb("#fde047");
-  const ORANGE = hexToRgb("#f59e0b");
-  const RED    = hexToRgb("#fb7185");
-
-  function dischargeColor(v) {
-
-    const low = thresholds.low;
-    const high = thresholds.high;
-    const extreme = thresholds.extreme;
-
-    let hex;
-
-    if (v <= low) {
-
-      hex = mixHex(
-        GREEN,
-        YELLOW,
-        0
-      );
-
-    } else if (low <= v && v <= high) {
-
-      const t =
-        (v - low) /
-        (high - low);
-
-      hex = mixHex(
-        GREEN,
-        YELLOW,
-        t
-      );
-
-    } else if (high <= v && v <= extreme) {
-
-      const t =
-        (v - high) /
-        (extreme - high);
-
-      hex = mixHex(
-        YELLOW,
-        ORANGE,
-        t
-      );
-
-    } else if (v >= extreme) {
-
-      // Ramps ORANGE -> RED over the band from `extreme` to 2x `extreme`,
-      // then holds solid RED. Clamped so it can never overshoot RED's
-      // channel values (t must stay within [0, 1]).
-      const t = Math.min(1, Math.max(0, (v - extreme) / extreme));
-
-      hex = mixHex(
-        ORANGE,
-        RED,
-        t
-      );
-
-    }
-
-    return new Color(hex);
-  }
-
-  // ===============================
-  // CHART
-  // ===============================
-  function buildChart(data) {
-    const vals = data.map(p => p.v);
-    const current = vals[vals.length - 1];
-
-    const startTime = data[0].t;
-    const endTime = data[data.length - 1].t;
-    const w = chartW;
-    const h = chartH;
-    const pad = 6;
-
-    const ctx = new DrawContext();
-    ctx.size = new Size(w, h);
-    ctx.opaque = false;
-    ctx.respectScreenScale = true;
-
-    let min = Infinity;
-    let max = -Infinity;
-
-    for (const v of vals) {
-      if (v < min) min = v;
-      if (v > max) max = v;
-    }
-
-    const range = max - min || 1;
-    const denom = Math.max(vals.length - 1, 1);
-
-    const getX = i => pad + (i / denom) * (w - pad * 2);
-
-    const totalHours =
-      (endTime.getTime() - startTime.getTime()) / 3600000;
-
-    const tickFontSize = 11;
-    const labelHeight = tickFontSize + 5;
-
-    // Reserves room for the tick labels at the bottom, so the reference
-    // line, guides, area, colored line, and dots all share one scale.
-    const getY = v =>
-      pad +
-      (1 - (v - min) / range) *
-      (h - pad * 2 - labelHeight);
-
-    // reference line
-    const refY = getY(referenceValue);
-    const ref = new Path();
-    ref.move(new Point(pad, refY));
-    ref.addLine(new Point(w - pad, refY));
-
-    ctx.addPath(ref);
-    ctx.setStrokeColor(new Color("#ffffff", 0.18));
-    ctx.setLineWidth(1);
-    ctx.strokePath();
-
-    // ===============================
-    // TIME GUIDES
-    // ===============================
-
-    // Guides snap to round clock times (rather than evenly splitting the
-    // window at odd minutes like 15:20), with faint unlabeled minor guides
-    // between labeled major ones.
-    const HOUR = 3600000;
-    const DAY = 24 * HOUR;
-    const [majorStep, minorStep] =
-      totalHours <= 6 ? [HOUR, HOUR / 4]
-      : totalHours <= 12 ? [2 * HOUR, HOUR]
-      : totalHours <= 24 ? [3 * HOUR, HOUR]
-      : totalHours <= 48 ? [6 * HOUR, 3 * HOUR]
-      : totalHours <= 24 * 14 ? [DAY, 6 * HOUR]
-      : [7 * DAY, DAY];
-
-    function formatTick(date) {
-      if (majorStep < DAY) {
-        return date.toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit"
-        });
-      }
-
-      return `${date.getDate()}/${date.getMonth() + 1}`;
-    }
-
-    const startMs = startTime.getTime();
-    const spanMs = Math.max(endTime.getTime() - startMs, 1);
-    const timeX = t => pad + ((t - startMs) / spanMs) * (w - pad * 2);
-    const guideBottom = h - pad - labelHeight;
-
-    function drawGuide(x, color) {
-      const guide = new Path();
-      guide.move(new Point(x, pad));
-      guide.addLine(new Point(x, guideBottom));
-      ctx.addPath(guide);
-      ctx.setStrokeColor(color);
-      ctx.setLineWidth(1);
-      ctx.strokePath();
-    }
-
-    // Steps are aligned to local midnight so e.g. 3h ticks land on
-    // 00/03/06…, not on hours offset by the timezone.
-    const tzOffsetMs = startTime.getTimezoneOffset() * 60000;
-    const firstTick = step =>
-      Math.ceil((startMs - tzOffsetMs) / step) * step + tzOffsetMs;
-
-    for (let t = firstTick(minorStep); t < endTime.getTime(); t += minorStep) {
-      if ((t - tzOffsetMs) % majorStep === 0) continue;
-      drawGuide(timeX(t), new Color("#ffffff", 0.04));
-    }
-
-    ctx.setFont(Font.systemFont(tickFontSize));
-    ctx.setTextColor(new Color("#ffffff", 0.45));
-    ctx.setTextAlignedCenter();
-
-    const labelWidth = 48;
-
-    for (let t = firstTick(majorStep); t < endTime.getTime(); t += majorStep) {
-      const x = timeX(t);
-      drawGuide(x, new Color("#ffffff", 0.1));
-
-      // Skip labels that would hang off the canvas edges rather than
-      // clamping them inward, which would misalign them with their guide.
-      if (x - labelWidth / 2 < 0 || x + labelWidth / 2 > w) continue;
-
-      ctx.drawTextInRect(
-        formatTick(new Date(t)),
-        new Rect(x - labelWidth / 2, h - labelHeight, labelWidth, labelHeight)
-      );
-    }
-
-    // "now" edge
-    drawGuide(w - pad, new Color("#ffffff", 0.18));
-
-    // area fill — tinted by the current reading's severity, not a fixed blue
-    const area = new Path();
-    vals.forEach((v, i) => {
-      const x = getX(i);
-      const y = getY(v);
-
-      if (i === 0) area.move(new Point(x, h - pad));
-      area.addLine(new Point(x, y));
-    });
-
-    area.addLine(new Point(w - pad, h - pad));
-    area.closeSubpath();
-
-    ctx.addPath(area);
-    ctx.setFillColor(new Color(dischargeColor(current).hex, 0.14));
-    ctx.fillPath();
-
-    // color line using absolute discharge thresholds
-    const STEP = 2;
-
-    for (let i = 0; i < vals.length - 1; i += STEP) {
-
-      // Clamp to the last index so the final segment always reaches the
-      // most recent point instead of stopping STEP points short of it.
-      const j = Math.min(i + STEP, vals.length - 1);
-
-      const v1 = vals[i];
-      const v2 = vals[j];
-
-      const representativeValue = (v1 + v2) / 2;
-
-      const segment = new Path();
-      segment.move(new Point(getX(i), getY(v1)));
-      segment.addLine(new Point(getX(j), getY(v2)));
-
-      ctx.addPath(segment);
-      ctx.setStrokeColor(
-        dischargeColor(representativeValue)
-      );
-      ctx.setLineWidth(4);
-      ctx.strokePath();
-    }
-
-    // ===============================
-    // MIN / MAX MARKERS
-    // ===============================
-    const minVal = min;
-    const maxVal = max;
-
-    const minIndex = vals.indexOf(minVal);
-    const maxIndex = vals.indexOf(maxVal);
-
-    function drawDot(x, y, color) {
-      // outer glow
-      const glow = new Path();
-      glow.addEllipse(new Rect(x - 7, y - 7, 14, 14));
-      ctx.addPath(glow);
-      ctx.setFillColor(new Color(color, 0.25));
-      ctx.fillPath();
-
-      // ring
-      const ring = new Path();
-      ring.addEllipse(new Rect(x - 5, y - 5, 10, 10));
-      ctx.addPath(ring);
-      ctx.setFillColor(Color.white());
-      ctx.fillPath();
-
-      // core
-      const core = new Path();
-      core.addEllipse(new Rect(x - 3, y - 3, 6, 6));
-      ctx.addPath(core);
-      ctx.setFillColor(new Color(color));
-      ctx.fillPath();
-    }
-
-    if (minIndex !== -1) {
-      drawDot(
-        getX(minIndex),
-        getY(minVal),
-        dischargeColor(minVal).hex
-      );
-    }
-
-    if (maxIndex !== -1) {
-      drawDot(
-        getX(maxIndex),
-        getY(maxVal),
-        dischargeColor(maxVal).hex
-      );
-    }
-
-    return ctx.getImage();
-  }
-
-  // ===============================
-  // WIDGET
-  // ===============================
-  const widget = new ListWidget();
-  widget.setPadding(padding, padding, bottomPadding, padding);
-  widget.backgroundImage = getBackground();
-  widget.url = stationUrl;
-
-  // Header row
-  const header = widget.addStack();
-  header.layoutHorizontally();
-
-  const title = header.addText(`${riverName} discharge`);
-  title.font = titleFont;
-  title.textColor = Color.white();
-  title.textOpacity = 0.9;
-
-  header.addSpacer();
-  const latestTimestamp = data[data.length - 1].t;
-
-  const updatedLabel =
-    `Last measurement ${latestTimestamp.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit"
-    })}` + (usedCache ? " · cached" : "");
-
-  const updated = header.addText(updatedLabel);
-
-  updated.font = Font.systemFont(10);
-  // Amber when we fell back to a cached reading, so a stale widget doesn't
-  // look as current as a freshly fetched one.
-  updated.textColor = usedCache ? new Color("#fbbf24") : new Color("#9ca3af");
-  updated.textOpacity = 0.8;
-
-  widget.addSpacer(6);
-
-  // Value
-  const valueText = widget.addText(`${current.toFixed(1)} m³ s⁻¹`);
-  valueText.font = valueFont;
-  valueText.textColor = dischargeColor(current);
-
-  widget.addSpacer(4);
-
-  // Stats
-  const stats = widget.addStack();
-  stats.layoutHorizontally();
-  stats.spacing = 14;
-
-  function stat(label, value, color) {
-    const t = stats.addText(`${label} ${value} m³ s⁻¹`);
-    t.font = Font.systemFont(11);
+  w.refreshAfterDate = new Date(Date.now() + 5 * 60 * 1000);
+
+  const line = (str, font, color, spaceBefore) => {
+    if (spaceBefore) w.addSpacer(spaceBefore);
+    const t = w.addText(str);
+    t.font = font;
     t.textColor = color;
-  }
+  };
+  line(`${isOverride ? `Station ${stationId}` : CONFIG.riverName} discharge`, Font.mediumSystemFont(14), Color.white());
+  line("No data available", Font.boldSystemFont(16), new Color("#fb7185"), 8);
+  line("Network failed and no cached reading was found.", Font.systemFont(11), new Color("#9ca3af"), 4);
 
-  stat(
-    "Min",
-    minV.toFixed(0),
-    dischargeColor(minV)
-  );
-  stat(
-    "Max",
-    maxV.toFixed(0),
-    dischargeColor(maxV)
-  );
-
-  const arrow =
-    trendDirection === "rising" ? "↑"
-    : trendDirection === "falling" ? "↓"
-    : "→";
-
-  stat(
-    `Trend ${CONFIG.trendHours}h`,
-    `${arrow} ${Math.abs(trendDelta).toFixed(1)}`,
-    trendColor(trendDirection)
-  );
-
-  widget.addSpacer(8);
-  widget.refreshAfterDate =
-    new Date(Date.now() + 10 * 60 * 1000);
-
-  // Chart
-  const chart = widget.addImage(buildChart(data));
-  chart.cornerRadius = 10;
-  chart.imageOpacity = 0.95;
-
-  Script.setWidget(widget);
+  Script.setWidget(w);
+  Script.complete();
+  return;
 }
 
+// ===============================
+// DATA
+// ===============================
+// Some stations publish both "Water level" and "Discharge" series.
+const series = json.plot.data.find(s => s.name === "Discharge") || json.plot.data[0];
+
+// CONFIG's name/thresholds are hand-tuned for the default station; for an
+// override station, use the API's title and official flood-stage bands.
+let riverName = CONFIG.riverName;
+let thresholds = CONFIG.thresholds;
+let referenceValue = CONFIG.referenceValue;
+
+if (isOverride) {
+  const title = json.plot.layout?.title;
+  if (typeof title === "string") {
+    riverName = title.split(" PQPlot")[0].split(" - ")[0].trim() || riverName;
+  }
+
+  const yref = (series.yaxis || "y") === "y" ? "y1" : series.yaxis;
+  const bands = [...new Set(
+    (json.plot.layout?.shapes || [])
+      .filter(s => s.type === "rect" && s.yref === yref && typeof s.y0 === "number")
+      .map(s => s.y0)
+  )].sort((a, b) => a - b);
+
+  if (bands.length >= 3) {
+    thresholds = { low: bands[0], high: bands[1], extreme: bands[2] };
+    referenceValue = bands[0];
+  }
+}
+
+// Pair x/y before filtering so a dropped value can't shift later timestamps.
+const points = series.x
+  .map((t, i) => ({ t: new Date(t), v: Number(series.y[i]) }))
+  .filter(p => !isNaN(p.v) && !isNaN(p.t));
+
+if (points.length === 0) throw new Error("No valid hydrology data available");
+
+const now = Date.now();
+let data = points.filter(p => p.t >= now - CONFIG.hoursWindow * HOUR);
+if (data.length < 2) data = points;
+
+const vals = data.map(p => p.v);
+const minV = Math.min(...vals);
+const maxV = Math.max(...vals);
+const current = vals[vals.length - 1];
+
+// Trend: the "stable" band scales with the river's own flow (floored at
+// 1 m³/s), so a small wobble doesn't read as rising at low flow.
+const pastValue = (data.find(p => p.t >= now - CONFIG.trendHours * HOUR) || data[0]).v;
+const trendDelta = current - pastValue;
+const trend =
+  Math.abs(trendDelta) < Math.max(Math.abs(pastValue) * CONFIG.trendStablePercent, 1) ? "stable"
+  : trendDelta > 0 ? "rising"
+  : "falling";
+
+// ===============================
+// COLORS
+// ===============================
+const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+const [GREEN, YELLOW, ORANGE, RED] = ["#34d399", "#fde047", "#f59e0b", "#fb7185"].map(rgb);
+
+// Blends two RGB triples; t clamped so a color never overshoots its target.
+function ramp(from, to, t) {
+  const k = Math.min(1, Math.max(0, t));
+  return "#" + from
+    .map((c, i) => Math.round(c + (to[i] - c) * k).toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// ORANGE -> RED spans `extreme` to 2x `extreme`, then holds RED.
+function dischargeColor(v, alpha = 1) {
+  const { low, high, extreme } = thresholds;
+  const hex =
+    v <= low ? ramp(GREEN, YELLOW, 0)
+    : v <= high ? ramp(GREEN, YELLOW, (v - low) / (high - low))
+    : v <= extreme ? ramp(YELLOW, ORANGE, (v - high) / (extreme - high))
+    : ramp(ORANGE, RED, (v - extreme) / extreme);
+  return new Color(hex, alpha);
+}
+
+// ===============================
+// LAYOUT (medium widget only)
+// ===============================
+const padding = 12;
+// The chart's tick labels already leave room, so less padding at the bottom.
+const bottomPadding = 6;
+
+// Medium widget size (pt) keyed by portrait screen size (pt). iOS
+// aspect-fits the chart into the room the text rows leave, so a chart whose
+// ratio doesn't match stops short of the right edge or leaves space below.
+const MEDIUM_WIDGET_SIZES = {
+  "440x956": [364, 170],
+  "430x932": [364, 170],
+  "428x926": [364, 170],
+  "414x896": [360, 169],
+  "414x736": [348, 157],
+  "402x874": [338, 158],
+  "393x852": [338, 158],
+  "390x844": [338, 158],
+  "375x812": [329, 155],
+  "375x667": [321, 148],
+  "320x568": [292, 141]
+};
+const screen = Device.screenSize();
+const screenKey = `${Math.min(screen.width, screen.height)}x${Math.max(screen.width, screen.height)}`;
+const [widgetW, widgetH] = MEDIUM_WIDGET_SIZES[screenKey] || [338, 158];
+
+// Height of the rows above the chart, measured from an on-device
+// screenshot. Too high leaves space under the chart; too low shrinks it
+// horizontally instead.
+const contentAboveChart = 86;
+
+// Fixed drawing width keeps fonts and line weights consistent; only the
+// height follows the slot's aspect ratio.
+const chartW = 530;
+const chartH = Math.round(
+  chartW * (widgetH - padding - bottomPadding - contentAboveChart) / (widgetW - padding * 2)
+);
+
+// ===============================
+// CHART
+// ===============================
+function buildChart() {
+  const w = chartW;
+  const h = chartH;
+  const pad = 6;
+  const tickFontSize = 11;
+  const labelHeight = tickFontSize + 5;
+  const guideBottom = h - pad - labelHeight;
+
+  const ctx = new DrawContext();
+  ctx.size = new Size(w, h);
+  ctx.opaque = false;
+  ctx.respectScreenScale = true;
+
+  const getX = i => pad + (i / Math.max(vals.length - 1, 1)) * (w - pad * 2);
+  // Leaves room at the bottom for the tick labels.
+  const getY = v => pad + (1 - (v - minV) / (maxV - minV || 1)) * (guideBottom - pad);
+
+  function line(x1, y1, x2, y2, color, width = 1) {
+    const p = new Path();
+    p.move(new Point(x1, y1));
+    p.addLine(new Point(x2, y2));
+    ctx.addPath(p);
+    ctx.setStrokeColor(color);
+    ctx.setLineWidth(width);
+    ctx.strokePath();
+  }
+
+  // reference line
+  const refY = getY(referenceValue);
+  line(pad, refY, w - pad, refY, new Color("#ffffff", 0.18));
+
+  // Time guides snap to round clock times (aligned to local midnight):
+  // labeled majors, faint unlabeled minors.
+  const DAY = 24 * HOUR;
+  const startMs = data[0].t.getTime();
+  const endMs = data[data.length - 1].t.getTime();
+  const spanMs = Math.max(endMs - startMs, 1);
+  const totalHours = spanMs / HOUR;
+  const [majorStep, minorStep] =
+    totalHours <= 6 ? [HOUR, HOUR / 4]
+    : totalHours <= 12 ? [2 * HOUR, HOUR]
+    : totalHours <= 24 ? [3 * HOUR, HOUR]
+    : totalHours <= 48 ? [6 * HOUR, 3 * HOUR]
+    : totalHours <= 24 * 14 ? [DAY, 6 * HOUR]
+    : [7 * DAY, DAY];
+
+  const timeX = t => pad + ((t - startMs) / spanMs) * (w - pad * 2);
+  const tz = data[0].t.getTimezoneOffset() * 60000;
+  const firstTick = step => Math.ceil((startMs - tz) / step) * step + tz;
+  const guide = (x, alpha) => line(x, pad, x, guideBottom, new Color("#ffffff", alpha));
+
+  for (let t = firstTick(minorStep); t < endMs; t += minorStep) {
+    if ((t - tz) % majorStep !== 0) guide(timeX(t), 0.04);
+  }
+
+  ctx.setFont(Font.systemFont(tickFontSize));
+  ctx.setTextColor(new Color("#ffffff", 0.45));
+  ctx.setTextAlignedCenter();
+  const labelWidth = 48;
+
+  for (let t = firstTick(majorStep); t < endMs; t += majorStep) {
+    const x = timeX(t);
+    guide(x, 0.1);
+    // Skip labels that would hang off the edges.
+    if (x - labelWidth / 2 < 0 || x + labelWidth / 2 > w) continue;
+    const date = new Date(t);
+    const label = majorStep < DAY
+      ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : `${date.getDate()}/${date.getMonth() + 1}`;
+    ctx.drawTextInRect(label, new Rect(x - labelWidth / 2, h - labelHeight, labelWidth, labelHeight));
+  }
+
+  // "now" edge
+  guide(w - pad, 0.18);
+
+  // area fill, tinted by the current reading's severity
+  const area = new Path();
+  vals.forEach((v, i) => {
+    if (i === 0) area.move(new Point(getX(i), h - pad));
+    area.addLine(new Point(getX(i), getY(v)));
+  });
+  area.addLine(new Point(w - pad, h - pad));
+  area.closeSubpath();
+  ctx.addPath(area);
+  ctx.setFillColor(dischargeColor(current, 0.14));
+  ctx.fillPath();
+
+  // line colored per segment; last segment clamped to reach the newest point
+  const STEP = 2;
+  for (let i = 0; i < vals.length - 1; i += STEP) {
+    const j = Math.min(i + STEP, vals.length - 1);
+    line(getX(i), getY(vals[i]), getX(j), getY(vals[j]), dischargeColor((vals[i] + vals[j]) / 2), 4);
+  }
+
+  // min / max markers: glow, white ring, colored core
+  for (const v of [minV, maxV]) {
+    const x = getX(vals.indexOf(v));
+    const y = getY(v);
+    for (const [r, color] of [[7, dischargeColor(v, 0.25)], [5, Color.white()], [3, dischargeColor(v)]]) {
+      const p = new Path();
+      p.addEllipse(new Rect(x - r, y - r, r * 2, r * 2));
+      ctx.addPath(p);
+      ctx.setFillColor(color);
+      ctx.fillPath();
+    }
+  }
+
+  return ctx.getImage();
+}
+
+// ===============================
+// WIDGET
+// ===============================
+const widget = new ListWidget();
+widget.setPadding(padding, padding, bottomPadding, padding);
+widget.backgroundColor = BG;
+widget.url = stationUrl;
+
+function text(stack, str, font, color, opacity = 1) {
+  const t = stack.addText(str);
+  t.font = font;
+  t.textColor = color;
+  t.textOpacity = opacity;
+}
+
+const header = widget.addStack();
+header.layoutHorizontally();
+text(header, `${riverName} discharge`, Font.mediumSystemFont(14), Color.white(), 0.9);
+header.addSpacer();
+const lastTime = data[data.length - 1].t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+// Amber when showing a cached reading, so a stale widget doesn't look fresh.
+text(
+  header,
+  `Last measurement ${lastTime}` + (usedCache ? " · cached" : ""),
+  Font.systemFont(10),
+  new Color(usedCache ? "#fbbf24" : "#9ca3af"),
+  0.8
+);
+
+widget.addSpacer(6);
+text(widget, `${current.toFixed(1)} m³ s⁻¹`, Font.boldSystemFont(30), dischargeColor(current));
+widget.addSpacer(4);
+
+const stats = widget.addStack();
+stats.layoutHorizontally();
+stats.spacing = 14;
+const arrow = { rising: "↑", falling: "↓", stable: "→" }[trend];
+const trendColor = { rising: "#fb7185", falling: "#34d399", stable: "#9ca3af" }[trend];
+text(stats, `Min ${minV.toFixed(0)} m³ s⁻¹`, Font.systemFont(11), dischargeColor(minV));
+text(stats, `Max ${maxV.toFixed(0)} m³ s⁻¹`, Font.systemFont(11), dischargeColor(maxV));
+text(stats, `Trend ${CONFIG.trendHours}h ${arrow} ${Math.abs(trendDelta).toFixed(1)} m³ s⁻¹`, Font.systemFont(11), new Color(trendColor));
+
+widget.addSpacer(8);
+widget.refreshAfterDate = new Date(Date.now() + 10 * 60 * 1000);
+
+const chart = widget.addImage(buildChart());
+chart.cornerRadius = 10;
+chart.imageOpacity = 0.95;
+
+Script.setWidget(widget);
 Script.complete();

@@ -47,7 +47,6 @@ All settings live in `CONFIG` at the top of the script:
 | --- | --- |
 | `stationId` | Default hydrodaten.admin.ch station ID. |
 | `riverName` | Display name for the default station. |
-| `bgFile` | Cached background image filename. |
 | `hoursWindow` | How much history the chart/stats window covers. |
 | `trendHours` | Lookback window for the trend arrow. |
 | `trendStablePercent` | Fraction of change below which the trend reads "stable". |

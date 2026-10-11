@@ -39,19 +39,6 @@ Only the **Medium** Home Screen widget is supported for now — layout, fonts, a
 
 Tapping the widget opens the station's page on hydrodaten.admin.ch.
 
-### Threshold alerts
-
-Configured under `CONFIG.alerts`:
-
-| Field | Meaning |
-| --- | --- |
-| `enabled` | Turn notifications on/off entirely. |
-| `highThreshold` | Notify at/above this value (m³/s). `null` defaults to the station's "extreme" flood-stage band. |
-| `lowThreshold` | Notify at/below this value (m³/s). `null` disables low-side alerts — there's no official "too low" threshold, so pick a number that matters for what you use the river for. |
-| `cooldownHours` | Minimum gap between repeat notifications for the same ongoing alert. |
-
-You'll also get a "back to normal" notification once the reading clears the alert range. First run may prompt iOS for notification permission for Scriptable — accept it, or alerts won't be delivered.
-
 ## Configuration reference
 
 All settings live in `CONFIG` at the top of the script:
@@ -66,7 +53,6 @@ All settings live in `CONFIG` at the top of the script:
 | `trendStablePercent` | Fraction of change below which the trend reads "stable". |
 | `referenceValue` | Value the chart's horizontal reference line marks (default station only). |
 | `thresholds.low/high/extreme` | Color-gradient thresholds (default station only). |
-| `alerts` | See [Threshold alerts](#threshold-alerts) above. |
 
 ## Limitations
 

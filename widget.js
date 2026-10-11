@@ -19,18 +19,6 @@ const CONFIG = {
     low: 100,
     high: 200,
     extreme: 300
-  },
-
-  // Local notifications when discharge crosses a level. highThreshold
-  // defaults to thresholds.extreme (or the derived "extreme" band for an
-  // override station) when left null. lowThreshold has no official
-  // equivalent, so it stays off unless you set a number (m³/s) — e.g. a
-  // minimum flow a stretch of river needs to be worth visiting.
-  alerts: {
-    enabled: true,
-    lowThreshold: null,
-    highThreshold: null,
-    cooldownHours: 6
   }
 };
 
@@ -256,66 +244,6 @@ if (!json?.plot?.data) {
     if (dir === "falling") return new Color("#34d399");
     return new Color("#9ca3af");
   }
-
-  // ===============================
-  // THRESHOLD ALERTS
-  // ===============================
-  // Persists the last alert state per station (independent of widget size,
-  // so multiple instances for the same station share one cooldown and don't
-  // double-notify) and fires again only on a state change or once the
-  // cooldown has elapsed — plus a "back to normal" notice when it clears.
-  async function checkAlerts() {
-    if (!CONFIG.alerts.enabled) return;
-
-    const highThreshold = CONFIG.alerts.highThreshold ?? thresholds.extreme;
-    const lowThreshold = CONFIG.alerts.lowThreshold;
-
-    let alertState = "none";
-    if (lowThreshold != null && current <= lowThreshold) alertState = "low";
-    else if (current >= highThreshold) alertState = "high";
-
-    const statePath = fm.joinPath(
-      fm.documentsDirectory(),
-      `hydro_${CONFIG.stationId}_alert_state.json`
-    );
-
-    let prev = { state: "none", notifiedAt: 0 };
-    if (fm.fileExists(statePath)) {
-      try {
-        prev = JSON.parse(fm.readString(statePath));
-      } catch (e) {
-        console.log("Alert state corrupted:", e);
-      }
-    }
-
-    const cooldownMs = CONFIG.alerts.cooldownHours * 60 * 60 * 1000;
-    const cooldownElapsed = Date.now() - (prev.notifiedAt || 0) >= cooldownMs;
-
-    async function notify(title, body) {
-      const n = new Notification();
-      n.title = title;
-      n.body = body;
-      n.sound = "default";
-      await n.schedule();
-      fm.writeString(statePath, JSON.stringify({ state: alertState, notifiedAt: Date.now() }));
-    }
-
-    if (alertState !== "none" && (alertState !== prev.state || cooldownElapsed)) {
-      await notify(
-        `${riverName} discharge ${alertState === "high" ? "high" : "low"}`,
-        alertState === "high"
-          ? `${current.toFixed(1)} m³/s — at or above the ${highThreshold} m³/s alert level.`
-          : `${current.toFixed(1)} m³/s — at or below the ${lowThreshold} m³/s alert level.`
-      );
-    } else if (alertState === "none" && prev.state !== "none") {
-      await notify(
-        `${riverName} discharge back to normal`,
-        `${current.toFixed(1)} m³/s is back within the normal range.`
-      );
-    }
-  }
-
-  await checkAlerts();
 
   // ===============================
   // LAYOUT (medium widget only, for now)
